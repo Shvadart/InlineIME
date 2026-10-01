@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">InlineIME</string>
+    <string name="subtype_ru">Русский</string>
+    <string name="subtype_en">English</string>
+</resources>
