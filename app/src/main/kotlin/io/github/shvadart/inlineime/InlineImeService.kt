@@ -230,7 +230,7 @@ class InlineImeService : InputMethodService() {
 
         val rows = when (language) {
             Language.RU -> listOf(
-                "йцукенгшщзх",
+                "ёйцукенгшщзх",
                 "фывапролджэ",
             )
             Language.EN -> listOf(
@@ -298,25 +298,9 @@ class InlineImeService : InputMethodService() {
                 setOnClickListener {
                     deleteOne()
                 }
-                setOnTouchListener { _, event ->
-                    when (event.actionMasked) {
-                        MotionEvent.ACTION_DOWN -> {
-                            stopDeleteRepeat()
-                            deleteRepeater = object : Runnable {
-                                override fun run() {
-                                    deleteOne()
-                                    repeatHandler.postDelayed(this, DELETE_REPEAT_MS)
-                                }
-                            }
-                            repeatHandler.postDelayed(deleteRepeater!!, DELETE_HOLD_DELAY_MS)
-                            false
-                        }
-                        MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                            stopDeleteRepeat()
-                            false
-                        }
-                        else -> false
-                    }
+                setOnLongClickListener {
+                    showClearPopup(this)
+                    true
                 }
             },
             weightedKeyParams(1.25f, dp(56)),
@@ -389,7 +373,8 @@ class InlineImeService : InputMethodService() {
                 (parent as? View)?.let { }
             }
         }
-        val popup = PopupWindow(clear, dp(54), dp(54), true).apply {
+        val popup = PopupWindow(clear, dp(54), dp(54), false).apply {
+            isTouchable = true
             isOutsideTouchable = true
             elevation = dp(8).toFloat()
         }
