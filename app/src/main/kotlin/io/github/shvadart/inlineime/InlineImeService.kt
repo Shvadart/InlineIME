@@ -1,14 +1,19 @@
 package io.github.shvadart.inlineime
 
+import android.graphics.Color
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.inputmethodservice.InputMethodService
+import android.os.Build
 import android.os.SystemClock
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
+import android.view.WindowInsets
 import android.view.inputmethod.InputConnection
-import android.widget.Button
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
+import android.widget.TextView
 import io.github.shvadart.inlineime.suggestion.CalculatorSuggestionProvider
 import io.github.shvadart.inlineime.suggestion.Suggestion
 import io.github.shvadart.inlineime.suggestion.SuggestionProvider
@@ -21,10 +26,10 @@ class InlineImeService : InputMethodService() {
     private var selectionMode = false
 
     private lateinit var lettersContainer: LinearLayout
-    private lateinit var suggestionButton: Button
-    private lateinit var selectButton: Button
-    private lateinit var languageButton: Button
-    private lateinit var shiftButton: Button
+    private lateinit var suggestionButton: TextView
+    private lateinit var selectButton: TextView
+    private lateinit var languageButton: TextView
+    private lateinit var shiftButton: TextView
 
     private var activeSuggestion: Suggestion? = null
 
@@ -36,23 +41,36 @@ class InlineImeService : InputMethodService() {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(4), dp(4), dp(4), dp(6))
-            setBackgroundColor(0xFF1C1C22.toInt())
+            setBackgroundColor(COLOR_BACKGROUND)
+            setOnApplyWindowInsetsListener { view, insets ->
+                val navBottom = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    insets.getInsets(WindowInsets.Type.navigationBars()).bottom
+                } else {
+                    @Suppress("DEPRECATION")
+                    insets.systemWindowInsetBottom
+                }
+                view.setPadding(dp(4), dp(4), dp(4), maxOf(dp(6), navBottom))
+                insets
+            }
         }
 
-        root.addView(buildEditingToolbar())
+        window?.window?.navigationBarColor = COLOR_BACKGROUND
 
-        suggestionButton = keyButton("No suggestion").apply {
-            isEnabled = false
-            alpha = 0.45f
+        root.addView(buildEditingToolbar(), rowParams(dp(44)))
+
+        suggestionButton = suggestionView().apply {
+            visibility = View.INVISIBLE
             setOnClickListener {
                 val suggestion = activeSuggestion ?: return@setOnClickListener
                 currentInputConnection?.commitText(suggestion.text, 1)
                 refreshSuggestion()
             }
         }
-        root.addView(suggestionButton, rowParams(dp(44)))
+        root.addView(suggestionButton, rowParams(dp(42)))
 
-        root.addView(buildRow("1234567890".map { it.toString() }, ::commitTextKey))
+        root.addView(
+            buildEqualRow("1234567890".map { it.toString() }, ::commitTextKey, dp(48)),
+        )
 
         lettersContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -96,87 +114,71 @@ class InlineImeService : InputMethodService() {
         }
 
         fun add(label: String, action: () -> Unit) {
-            row.addView(keyButton(label).apply { setOnClickListener { action() } })
+            row.addView(
+                toolbarButton(label).apply { setOnClickListener { action() } },
+                LinearLayout.LayoutParams(0, dp(40), 1f),
+            )
         }
 
-        add("⏮") { sendNavigation(KeyEvent.KEYCODE_MOVE_HOME) }
-        add("ALL") { performContextAction(android.R.id.selectAll) }
+        add("|←") { sendNavigation(KeyEvent.KEYCODE_MOVE_HOME) }
+        add("▣") { performContextAction(android.R.id.selectAll) }
         add("↑") { sendNavigation(KeyEvent.KEYCODE_DPAD_UP) }
         add("←") { sendNavigation(KeyEvent.KEYCODE_DPAD_LEFT) }
 
-        selectButton = keyButton("SEL").apply {
+        selectButton = toolbarButton("T").apply {
             setOnClickListener {
                 selectionMode = !selectionMode
-                text = if (selectionMode) "SEL*" else "SEL"
+                updateSelectionButton()
             }
         }
-        row.addView(selectButton)
+        row.addView(selectButton, LinearLayout.LayoutParams(0, dp(40), 1f))
 
         add("→") { sendNavigation(KeyEvent.KEYCODE_DPAD_RIGHT) }
         add("↓") { sendNavigation(KeyEvent.KEYCODE_DPAD_DOWN) }
-        add("CUT") { performContextAction(android.R.id.cut) }
-        add("COPY") { performContextAction(android.R.id.copy) }
-        add("PASTE") { pasteFast() }
-        add("⏭") { sendNavigation(KeyEvent.KEYCODE_MOVE_END) }
+        add("⧉") { performContextAction(android.R.id.copy) }
+        add("▤") { pasteFast() }
+        add("→|") { sendNavigation(KeyEvent.KEYCODE_MOVE_END) }
 
-        return HorizontalScrollView(this).apply {
-            isHorizontalScrollBarEnabled = false
-            addView(row)
-        }
+        return row
     }
 
     private fun buildBottomRow(): View {
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
         }
 
-        shiftButton = keyButton("⇧").apply {
-            setOnClickListener {
-                shift = !shift
-                renderLetterRows()
-            }
+        row.addView(bottomKey("#1?") {
+            // Symbols layout will be added in a following iteration.
+        }, weightedKeyParams(weight = 1.15f, height = dp(56)))
+
+        languageButton = bottomKey("RU") {
+            language = if (language == Language.RU) Language.EN else Language.RU
+            languageButton.text = if (language == Language.RU) "RU" else "EN"
+            renderLetterRows()
         }
-        row.addView(shiftButton, weightedKeyParams())
+        row.addView(languageButton, weightedKeyParams(weight = 1.0f, height = dp(56)))
 
-        row.addView(keyButton(",").apply {
-            setOnClickListener { commitTextKey(",") }
-        }, weightedKeyParams())
+        row.addView(bottomKey(",") { commitTextKey(",") }, weightedKeyParams(0.8f, dp(56)))
 
-        languageButton = keyButton("RU").apply {
-            setOnClickListener {
-                language = if (language == Language.RU) Language.EN else Language.RU
-                text = if (language == Language.RU) "RU" else "EN"
-                renderLetterRows()
-            }
-        }
-        row.addView(languageButton, weightedKeyParams())
+        row.addView(
+            bottomKey(if (language == Language.RU) "Русский" else "English") {
+                commitTextKey(" ")
+            }.also { space ->
+                space.setOnLongClickListener {
+                    commitTextKey(" ")
+                    true
+                }
+            },
+            weightedKeyParams(4.2f, dp(56)),
+        )
 
-        row.addView(keyButton("space").apply {
-            setOnClickListener { commitTextKey(" ") }
-        }, LinearLayout.LayoutParams(0, dp(54), 3f).apply { setMargins(dp(2), dp(2), dp(2), dp(2)) })
+        row.addView(bottomKey(".") { commitTextKey(".") }, weightedKeyParams(0.8f, dp(56)))
 
-        row.addView(keyButton(".").apply {
-            setOnClickListener { commitTextKey(".") }
-        }, weightedKeyParams())
-
-        row.addView(keyButton("⌫").apply {
-            setOnClickListener {
-                currentInputConnection?.deleteSurroundingText(1, 0)
-                refreshSuggestion()
-            }
-            setOnLongClickListener {
-                currentInputConnection?.deleteSurroundingText(5, 0)
-                refreshSuggestion()
-                true
-            }
-        }, weightedKeyParams())
-
-        row.addView(keyButton("↵").apply {
-            setOnClickListener {
-                sendNavigation(KeyEvent.KEYCODE_ENTER, useSelectionMeta = false)
-                refreshSuggestion()
-            }
-        }, weightedKeyParams())
+        row.addView(bottomKey("↵") {
+            sendNavigation(KeyEvent.KEYCODE_ENTER, useSelectionMeta = false)
+            refreshSuggestion()
+        }, weightedKeyParams(1.2f, dp(56)))
 
         return row
     }
@@ -186,33 +188,95 @@ class InlineImeService : InputMethodService() {
         lettersContainer.removeAllViews()
 
         val rows = when (language) {
-            Language.RU -> listOf("йцукенгшщзхъ", "фывапролджэ", "ячсмитьбю")
-            Language.EN -> listOf("qwertyuiop", "asdfghjkl", "zxcvbnm")
+            Language.RU -> listOf(
+                "йцукенгшщзх",
+                "фывапролджэ",
+            )
+            Language.EN -> listOf(
+                "qwertyuiop",
+                "asdfghjkl",
+            )
         }
 
-        rows.forEach { chars ->
+        rows.forEachIndexed { index, chars ->
             val labels = chars.map { char ->
                 val c = if (shift) char.uppercaseChar() else char
                 c.toString()
             }
-            lettersContainer.addView(buildRow(labels, ::commitLetter))
+            val sideInset = if (index == 1) dp(14) else 0
+            lettersContainer.addView(
+                buildEqualRow(labels, ::commitLetter, dp(56), sideInset),
+            )
         }
 
+        lettersContainer.addView(buildThirdLetterRow())
+
         if (::shiftButton.isInitialized) {
-            shiftButton.text = if (shift) "⇧*" else "⇧"
+            updateShiftButton()
         }
     }
 
-    private fun buildRow(labels: List<String>, action: (String) -> Unit): View {
+    private fun buildThirdLetterRow(): View {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+
+        shiftButton = specialKey("⇧").apply {
+            setOnClickListener {
+                shift = !shift
+                renderLetterRows()
+            }
+        }
+        row.addView(shiftButton, weightedKeyParams(1.25f, dp(56)))
+
+        val chars = when (language) {
+            Language.RU -> "ячсмитьбю"
+            Language.EN -> "zxcvbnm"
+        }
+        chars.forEach { char ->
+            val label = (if (shift) char.uppercaseChar() else char).toString()
+            row.addView(
+                keyView(label).apply { setOnClickListener { commitLetter(label) } },
+                weightedKeyParams(1f, dp(56)),
+            )
+        }
+
+        row.addView(
+            specialKey("⌫").apply {
+                setOnClickListener {
+                    currentInputConnection?.deleteSurroundingText(1, 0)
+                    refreshSuggestion()
+                }
+                setOnLongClickListener {
+                    currentInputConnection?.deleteSurroundingText(5, 0)
+                    refreshSuggestion()
+                    true
+                }
+            },
+            weightedKeyParams(1.25f, dp(56)),
+        )
+
+        return row
+    }
+
+    private fun buildEqualRow(
+        labels: List<String>,
+        action: (String) -> Unit,
+        height: Int,
+        sideInset: Int = 0,
+    ): View {
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(sideInset, 0, sideInset, 0)
         }
 
         labels.forEach { label ->
-            row.addView(keyButton(label).apply {
-                setOnClickListener { action(label) }
-            }, weightedKeyParams())
+            row.addView(
+                keyView(label).apply { setOnClickListener { action(label) } },
+                weightedKeyParams(1f, height),
+            )
         }
         return row
     }
@@ -242,16 +306,14 @@ class InlineImeService : InputMethodService() {
             provider.suggest(beforeCursor)
         }
 
+        val suggestion = activeSuggestion
         suggestionButton.apply {
-            val suggestion = activeSuggestion
             if (suggestion == null) {
-                text = "No suggestion"
-                isEnabled = false
-                alpha = 0.45f
+                text = ""
+                visibility = View.INVISIBLE
             } else {
                 text = suggestion.text
-                isEnabled = true
-                alpha = 1f
+                visibility = View.VISIBLE
             }
         }
     }
@@ -294,25 +356,85 @@ class InlineImeService : InputMethodService() {
         refreshSuggestion()
     }
 
-    private fun keyButton(label: String): Button = Button(this).apply {
+    private fun keyView(label: String): TextView = TextView(this).apply {
         text = label
-        textSize = 15f
-        isAllCaps = false
-        minWidth = 0
-        minimumWidth = 0
-        minHeight = 0
-        minimumHeight = 0
-        setPadding(dp(6), 0, dp(6), 0)
+        gravity = Gravity.CENTER
+        textSize = 20f
+        setTextColor(COLOR_KEY_TEXT)
+        typeface = Typeface.create("sans-serif", Typeface.NORMAL)
+        background = roundedBackground(COLOR_KEY)
+        isClickable = true
+        isFocusable = true
     }
 
-    private fun weightedKeyParams() =
-        LinearLayout.LayoutParams(0, dp(54), 1f).apply {
-            setMargins(dp(2), dp(2), dp(2), dp(2))
+    private fun specialKey(label: String): TextView =
+        keyView(label).apply {
+            background = roundedBackground(COLOR_SPECIAL_KEY)
+            textSize = 21f
+        }
+
+    private fun bottomKey(label: String, action: () -> Unit): TextView =
+        specialKey(label).apply {
+            setOnClickListener { action() }
+            textSize = if (label.length > 3) 16f else 19f
+        }
+
+    private fun toolbarButton(label: String): TextView = TextView(this).apply {
+        text = label
+        gravity = Gravity.CENTER
+        textSize = 20f
+        setTextColor(COLOR_TOOLBAR_TEXT)
+        typeface = Typeface.create("sans-serif", Typeface.NORMAL)
+        isClickable = true
+        isFocusable = true
+    }
+
+    private fun suggestionView(): TextView = TextView(this).apply {
+        gravity = Gravity.CENTER
+        textSize = 18f
+        setTextColor(COLOR_KEY_TEXT)
+        typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+        background = roundedBackground(COLOR_SUGGESTION)
+        isClickable = true
+        isFocusable = true
+    }
+
+    private fun updateSelectionButton() {
+        selectButton.apply {
+            text = "T"
+            background = if (selectionMode) {
+                roundedBackground(COLOR_ACTIVE)
+            } else {
+                null
+            }
+            setTextColor(if (selectionMode) Color.WHITE else COLOR_TOOLBAR_TEXT)
+        }
+    }
+
+    private fun updateShiftButton() {
+        shiftButton.background = if (shift) {
+            roundedBackground(COLOR_ACTIVE)
+        } else {
+            roundedBackground(COLOR_SPECIAL_KEY)
+        }
+        shiftButton.setTextColor(if (shift) Color.WHITE else COLOR_KEY_TEXT)
+    }
+
+    private fun roundedBackground(color: Int): GradientDrawable =
+        GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = dp(8).toFloat()
+            setColor(color)
+        }
+
+    private fun weightedKeyParams(weight: Float, height: Int) =
+        LinearLayout.LayoutParams(0, height, weight).apply {
+            setMargins(dp(3), dp(3), dp(3), dp(3))
         }
 
     private fun rowParams(height: Int) =
         LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, height).apply {
-            setMargins(dp(2), dp(2), dp(2), dp(2))
+            setMargins(dp(3), dp(2), dp(3), dp(2))
         }
 
     private fun dp(value: Int): Int =
@@ -320,5 +442,13 @@ class InlineImeService : InputMethodService() {
 
     private companion object {
         const val PASTE_CHUNK_SIZE = 8 * 1024
+
+        const val COLOR_BACKGROUND = 0xFF1B1C21.toInt()
+        const val COLOR_KEY = 0xFF2B2C31.toInt()
+        const val COLOR_SPECIAL_KEY = 0xFF35363D.toInt()
+        const val COLOR_SUGGESTION = 0xFF2D2E34.toInt()
+        const val COLOR_KEY_TEXT = 0xFFF1F1F5.toInt()
+        const val COLOR_TOOLBAR_TEXT = 0xFFE7E7ED.toInt()
+        const val COLOR_ACTIVE = 0xFF5C6BC0.toInt()
     }
 }
