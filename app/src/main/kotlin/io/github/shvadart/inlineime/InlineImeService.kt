@@ -210,7 +210,8 @@ class InlineImeService : InputMethodService() {
         }, weightedKeyParams(0.8f, dp(56)))
 
         row.addView(bottomKey("↵") {
-            sendNavigation(KeyEvent.KEYCODE_ENTER, useSelectionMeta = false)
+            currentInputConnection?.commitText("\n", 1)
+            enableAutoShift()
             refreshSuggestion()
         }, weightedKeyParams(1.2f, dp(56)))
 
@@ -408,7 +409,7 @@ class InlineImeService : InputMethodService() {
         suggestionButton.apply {
             if (suggestion == null) {
                 text = ""
-                visibility = View.INVISIBLE
+                visibility = View.GONE
             } else {
                 text = suggestion.text
                 visibility = View.VISIBLE
