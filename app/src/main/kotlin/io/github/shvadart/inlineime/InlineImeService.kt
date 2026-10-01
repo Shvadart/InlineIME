@@ -6,8 +6,11 @@ import android.graphics.drawable.GradientDrawable
 import android.inputmethodservice.InputMethodService
 import android.os.Build
 import android.os.SystemClock
+import android.os.Handler
+import android.os.Looper
 import android.view.Gravity
 import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.View
 import android.view.WindowInsets
 import android.widget.PopupWindow
@@ -35,6 +38,10 @@ class InlineImeService : InputMethodService() {
     private lateinit var selectButton: TextView
     private lateinit var languageButton: TextView
     private lateinit var shiftButton: TextView
+    private lateinit var spaceButton: TextView
+
+    private val repeatHandler = Handler(Looper.getMainLooper())
+    private var deleteRepeater: Runnable? = null
 
     private var activeSuggestion: Suggestion? = null
 
@@ -54,7 +61,7 @@ class InlineImeService : InputMethodService() {
                     @Suppress("DEPRECATION")
                     insets.systemWindowInsetBottom
                 }
-                view.setPadding(dp(4), dp(4), dp(4), maxOf(dp(14), navBottom + dp(8)))
+                view.setPadding(dp(4), dp(4), dp(4), maxOf(dp(24), navBottom + dp(18)))
                 insets
             }
         }
@@ -154,7 +161,8 @@ class InlineImeService : InputMethodService() {
         }
 
         row.addView(bottomKey("#1?") {
-            // Symbols layout will be added in a following iteration.
+            symbols = !symbols
+            renderLetterRows()
         }, weightedKeyParams(weight = 1.15f, height = dp(56)))
 
         languageButton = bottomKey("RU") {
@@ -166,17 +174,33 @@ class InlineImeService : InputMethodService() {
 
         row.addView(bottomKey(",") { commitTextKey(",") }, weightedKeyParams(0.8f, dp(56)))
 
-        row.addView(
-            bottomKey(if (language == Language.RU) "Русский" else "English") {
-                commitTextKey(" ")
-            }.also { space ->
-                space.setOnLongClickListener {
-                    commitTextKey(" ")
-                    true
+        spaceButton = bottomKey(if (language == Language.RU) "Русский" else "English") {
+            commitTextKey(" ")
+        }.apply {
+            var downX = 0f
+            setOnTouchListener { _, event ->
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> {
+                        downX = event.x
+                        false
+                    }
+                    MotionEvent.ACTION_UP -> {
+                        val dx = event.x - downX
+                        if (kotlin.math.abs(dx) >= dp(48)) {
+                            language = if (language == Language.RU) Language.EN else Language.RU
+                            languageButton.text = if (language == Language.RU) "RU" else "EN"
+                            text = if (language == Language.RU) "Русский" else "English"
+                            renderLetterRows()
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    else -> false
                 }
-            },
-            weightedKeyParams(4.2f, dp(56)),
-        )
+            }
+        }
+        row.addView(spaceButton, weightedKeyParams(4.2f, dp(56)))
 
         row.addView(bottomKey(".") { commitTextKey(".") }.apply {
             setOnLongClickListener {
@@ -272,18 +296,43 @@ class InlineImeService : InputMethodService() {
         row.addView(
             specialKey("⌫").apply {
                 setOnClickListener {
-                    currentInputConnection?.deleteSurroundingText(1, 0)
-                    refreshSuggestion()
+                    deleteOne()
                 }
-                setOnLongClickListener {
-                    showClearPopup(this)
-                    true
+                setOnTouchListener { _, event ->
+                    when (event.actionMasked) {
+                        MotionEvent.ACTION_DOWN -> {
+                            stopDeleteRepeat()
+                            deleteRepeater = object : Runnable {
+                                override fun run() {
+                                    deleteOne()
+                                    repeatHandler.postDelayed(this, DELETE_REPEAT_MS)
+                                }
+                            }
+                            repeatHandler.postDelayed(deleteRepeater!!, DELETE_HOLD_DELAY_MS)
+                            false
+                        }
+                        MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                            stopDeleteRepeat()
+                            false
+                        }
+                        else -> false
+                    }
                 }
             },
             weightedKeyParams(1.25f, dp(56)),
         )
 
         return row
+    }
+
+    private fun deleteOne() {
+        currentInputConnection?.deleteSurroundingText(1, 0)
+        refreshSuggestion()
+    }
+
+    private fun stopDeleteRepeat() {
+        deleteRepeater?.let(repeatHandler::removeCallbacks)
+        deleteRepeater = null
     }
 
     private fun buildEqualRow(
@@ -309,7 +358,7 @@ class InlineImeService : InputMethodService() {
 
     private fun commitLetter(text: String) {
         currentInputConnection?.commitText(text, 1)
-        if (shift) {
+        if (shift && !capsLock) {
             shift = false
             renderLetterRows()
         }
@@ -517,7 +566,9 @@ class InlineImeService : InputMethodService() {
 
     private companion object {
         const val PASTE_CHUNK_SIZE = 8 * 1024
-        const val DOUBLE_TAP_MS = 350L
+        const val DOUBLE_TAP_MS = 500L
+        const val DELETE_HOLD_DELAY_MS = 350L
+        const val DELETE_REPEAT_MS = 55L
 
         const val COLOR_BACKGROUND = 0xFF1B1C21.toInt()
         const val COLOR_KEY = 0xFF2B2C31.toInt()
