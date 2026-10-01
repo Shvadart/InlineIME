@@ -49,7 +49,7 @@ class InlineImeService : InputMethodService() {
                     @Suppress("DEPRECATION")
                     insets.systemWindowInsetBottom
                 }
-                view.setPadding(dp(4), dp(4), dp(4), maxOf(dp(6), navBottom))
+                view.setPadding(dp(4), dp(4), dp(4), maxOf(dp(14), navBottom + dp(8)))
                 insets
             }
         }
@@ -59,7 +59,7 @@ class InlineImeService : InputMethodService() {
         root.addView(buildEditingToolbar(), rowParams(dp(44)))
 
         suggestionButton = suggestionView().apply {
-            visibility = View.INVISIBLE
+            visibility = View.GONE
             setOnClickListener {
                 val suggestion = activeSuggestion ?: return@setOnClickListener
                 currentInputConnection?.commitText(suggestion.text, 1)
@@ -173,7 +173,12 @@ class InlineImeService : InputMethodService() {
             weightedKeyParams(4.2f, dp(56)),
         )
 
-        row.addView(bottomKey(".") { commitTextKey(".") }, weightedKeyParams(0.8f, dp(56)))
+        row.addView(bottomKey(".") { commitTextKey(".") }.apply {
+            setOnLongClickListener {
+                commitTextKey(",")
+                true
+            }
+        }, weightedKeyParams(0.8f, dp(56)))
 
         row.addView(bottomKey("↵") {
             sendNavigation(KeyEvent.KEYCODE_ENTER, useSelectionMeta = false)
@@ -186,6 +191,13 @@ class InlineImeService : InputMethodService() {
     private fun renderLetterRows() {
         if (!::lettersContainer.isInitialized) return
         lettersContainer.removeAllViews()
+
+        if (symbols) {
+            listOf("!@#%&*+-=", "()[]{}<>", "\\/:;\"'€£¥").forEach { chars ->
+                lettersContainer.addView(buildEqualRow(chars.map { it.toString() }, ::commitTextKey, dp(56)))
+            }
+            return
+        }
 
         val rows = when (language) {
             Language.RU -> listOf(
@@ -224,7 +236,17 @@ class InlineImeService : InputMethodService() {
 
         shiftButton = specialKey("⇧").apply {
             setOnClickListener {
-                shift = !shift
+                val now = SystemClock.uptimeMillis()
+                if (now - lastShiftTap <= DOUBLE_TAP_MS) {
+                    capsLock = true
+                    shift = true
+                } else if (capsLock) {
+                    capsLock = false
+                    shift = false
+                } else {
+                    shift = !shift
+                }
+                lastShiftTap = now
                 renderLetterRows()
             }
         }
@@ -249,8 +271,7 @@ class InlineImeService : InputMethodService() {
                     refreshSuggestion()
                 }
                 setOnLongClickListener {
-                    currentInputConnection?.deleteSurroundingText(5, 0)
-                    refreshSuggestion()
+                    showClearPopup(this)
                     true
                 }
             },
@@ -292,6 +313,44 @@ class InlineImeService : InputMethodService() {
 
     private fun commitTextKey(text: String) {
         currentInputConnection?.commitText(text, 1)
+        if (text == "\n" || text == "." || text == "!" || text == "?") enableAutoShift()
+        refreshSuggestion()
+    }
+
+    private fun enableAutoShift() {
+        if (!capsLock && !shift) {
+            shift = true
+            renderLetterRows()
+        }
+    }
+
+    private fun buildNumberRow(): View =
+        buildEqualRow("1234567890".map { it.toString() }, ::commitTextKey, dp(48))
+
+    private fun showClearPopup(anchor: View) {
+        val clear = specialKey("✕").apply {
+            textSize = 24f
+            setOnClickListener {
+                clearAllText()
+                (parent as? View)?.let { }
+            }
+        }
+        val popup = PopupWindow(clear, dp(54), dp(54), true).apply {
+            isOutsideTouchable = true
+            elevation = dp(8).toFloat()
+        }
+        clear.setOnClickListener {
+            clearAllText()
+            popup.dismiss()
+        }
+        popup.showAsDropDown(anchor, 0, -dp(112))
+    }
+
+    private fun clearAllText() {
+        val ic = currentInputConnection ?: return
+        ic.performContextMenuAction(android.R.id.selectAll)
+        ic.commitText("", 1)
+        enableAutoShift()
         refreshSuggestion()
     }
 
@@ -348,11 +407,22 @@ class InlineImeService : InputMethodService() {
 
     private fun sendNavigation(keyCode: Int, useSelectionMeta: Boolean = true) {
         val ic = currentInputConnection ?: return
-        val now = SystemClock.uptimeMillis()
-        val meta = if (selectionMode && useSelectionMeta) KeyEvent.META_SHIFT_ON else 0
-
-        ic.sendKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_DOWN, keyCode, 0, meta))
-        ic.sendKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_UP, keyCode, 0, meta))
+        if (selectionMode && useSelectionMeta &&
+            (keyCode == KeyEvent.KEYCODE_DPAD_LEFT || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT)
+        ) {
+            val extracted = ic.getExtractedText(android.view.inputmethod.ExtractedTextRequest(), 0) ?: return
+            val anchor = selectionAnchor ?: extracted.selectionStart.also { selectionAnchor = it }
+            val active = if (extracted.selectionStart == anchor) extracted.selectionEnd else extracted.selectionStart
+            val next = when (keyCode) {
+                KeyEvent.KEYCODE_DPAD_LEFT -> (active - 1).coerceAtLeast(0)
+                else -> (active + 1).coerceAtMost(extracted.text.length)
+            }
+            ic.setSelection(minOf(anchor, next), maxOf(anchor, next))
+        } else {
+            val now = SystemClock.uptimeMillis()
+            ic.sendKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_DOWN, keyCode, 0, 0))
+            ic.sendKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_UP, keyCode, 0, 0))
+        }
         refreshSuggestion()
     }
 
@@ -429,7 +499,7 @@ class InlineImeService : InputMethodService() {
 
     private fun weightedKeyParams(weight: Float, height: Int) =
         LinearLayout.LayoutParams(0, height, weight).apply {
-            setMargins(dp(3), dp(3), dp(3), dp(3))
+            setMargins(dp(1), dp(2), dp(1), dp(2))
         }
 
     private fun rowParams(height: Int) =
@@ -441,7 +511,7 @@ class InlineImeService : InputMethodService() {
         (value * resources.displayMetrics.density).toInt()
 
     private companion object {
-        const val PASTE_CHUNK_SIZE = 8 * 1024
+        const val PASTE_CHUNK_SIZE = 8 * 1024\n        const val DOUBLE_TAP_MS = 350L
 
         const val COLOR_BACKGROUND = 0xFF1B1C21.toInt()
         const val COLOR_KEY = 0xFF2B2C31.toInt()
