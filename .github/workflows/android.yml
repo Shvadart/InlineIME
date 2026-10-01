@@ -64,7 +64,8 @@ jobs:
 
       - name: Verify release signature
         if: github.event_name == 'push'
-        run: "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs app/build/outputs/apk/release/app-release.apk
+        run: |
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs app/build/outputs/apk/release/app-release.apk
 
       - name: Upload signed release APK
         if: github.event_name == 'push'
