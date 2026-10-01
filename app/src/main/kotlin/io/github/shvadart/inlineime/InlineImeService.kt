@@ -471,14 +471,14 @@ class InlineImeService : InputMethodService() {
         textSize = 20f
         setTextColor(COLOR_KEY_TEXT)
         typeface = Typeface.create("sans-serif", Typeface.NORMAL)
-        background = roundedBackground(COLOR_KEY)
+        background = insetKeyBackground(COLOR_KEY)
         isClickable = true
         isFocusable = true
     }
 
     private fun specialKey(label: String): TextView =
         keyView(label).apply {
-            background = roundedBackground(COLOR_SPECIAL_KEY)
+            background = insetKeyBackground(COLOR_SPECIAL_KEY)
             textSize = 21f
         }
 
@@ -536,10 +536,17 @@ class InlineImeService : InputMethodService() {
             setColor(color)
         }
 
+    private fun insetKeyBackground(color: Int): android.graphics.drawable.InsetDrawable =
+        android.graphics.drawable.InsetDrawable(
+            roundedBackground(color),
+            dp(1),
+            dp(2),
+            dp(1),
+            dp(2),
+        )
+
     private fun weightedKeyParams(weight: Float, height: Int) =
-        LinearLayout.LayoutParams(0, height, weight).apply {
-            setMargins(dp(1), dp(2), dp(1), dp(2))
-        }
+        LinearLayout.LayoutParams(0, height, weight)
 
     private fun rowParams(height: Int) =
         LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, height).apply {
