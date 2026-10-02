@@ -95,6 +95,31 @@ class AdaptiveWordSuggester(private val prefs: SharedPreferences) {
             .firstOrNull { !it.prefixMatch && it.editDistance == 1 }
     }
 
+    fun splitRunTogetherWord(contextBeforeCursor: String, russian: Boolean): String? {
+        val raw = extractCurrentWord(contextBeforeCursor)
+        if (raw.length < 6 || isTechnicalContext(contextBeforeCursor, raw)) return null
+        val normalized = raw.lowercase(Locale.ROOT)
+        if (isKnownWord(normalized, russian)) return null
+        val base = if (russian) RU_WORDS else EN_WORDS
+
+        var best: Pair<String, String>? = null
+        var bestScore = Int.MIN_VALUE
+        for (split in 2..normalized.length - 2) {
+            val left = normalized.substring(0, split)
+            val right = normalized.substring(split)
+            if (left !in base && left !in usage) continue
+            if (right !in base && right !in usage) continue
+            val score = (usage[left] ?: 0) + (usage[right] ?: 0) + min(left.length, right.length)
+            if (score > bestScore) {
+                best = left to right
+                bestScore = score
+            }
+        }
+        val pair = best ?: return null
+        val replacement = pair.first + " " + pair.second
+        return matchCase(raw, replacement)
+    }
+
     private fun extractCurrentWord(text: String): String =
         text.takeLastWhile { it.isLetter() || it == '-' || it == '\'' }
 
