@@ -92,6 +92,17 @@ class InlineImeService : InputMethodService() {
 
         window?.window?.navigationBarColor = COLOR_BACKGROUND
 
+        root.addView(TextView(this).apply {
+            val versionName = runCatching {
+                packageManager.getPackageInfo(packageName, 0).versionName
+            }.getOrNull().orEmpty()
+            text = "InlineIME $versionName"
+            textSize = 9f
+            setTextColor(Color.parseColor("#777980"))
+            gravity = Gravity.END or Gravity.CENTER_VERTICAL
+            setPadding(0, 0, dp(4), 0)
+        }, rowParams(dp(12)))
+
         root.addView(buildEditingToolbar(), rowParams(dp(44)))
 
         suggestionButton = suggestionView().apply {
