@@ -8,12 +8,13 @@ class RussianBloomDictionary(context: Context) {
     private val bits: ByteArray? = runCatching {
         context.assets.open(ASSET).use { it.readBytes() }
     }.getOrNull()
+    private val sha256 = MessageDigest.getInstance("SHA-256")
 
     fun contains(value: String): Boolean {
         val data = bits ?: return false
         val word = normalize(value)
         if (word.isEmpty()) return false
-        val digest = MessageDigest.getInstance("SHA-256").digest(word.toByteArray(Charsets.UTF_8))
+        val digest = sha256.digest(word.toByteArray(Charsets.UTF_8))
         val h1 = readLong(digest, 0)
         val h2 = readLong(digest, 8) or 1L
         val mask = (data.size.toLong() * 8L) - 1L
