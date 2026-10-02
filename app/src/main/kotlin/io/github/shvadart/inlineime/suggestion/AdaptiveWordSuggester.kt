@@ -157,6 +157,17 @@ class AdaptiveWordSuggester(context: Context, private val prefs: SharedPreferenc
         val raw = extractCurrentWord(contextBeforeCursor)
         if (raw.length < 3 || isTechnicalContext(contextBeforeCursor, raw)) return null
 
+        hyphenatedRunTogetherWord(raw, russian)?.let { replacement ->
+            return WordCandidate(
+                word = replacement,
+                score = 9_500,
+                editDistance = 1,
+                prefixMatch = false,
+                typoCost = 4,
+                commonWord = true,
+            )
+        }
+
         // Compound words are corrected one part at a time: "каких-тл" -> "каких-то".
         // This keeps the hyphen and avoids treating the whole compound as one huge typo.
         if ('-' in raw && !raw.startsWith('-') && !raw.endsWith('-')) {
@@ -218,7 +229,9 @@ class AdaptiveWordSuggester(context: Context, private val prefs: SharedPreferenc
 
     fun splitRunTogetherWord(contextBeforeCursor: String, russian: Boolean): String? {
         val raw = extractCurrentWord(contextBeforeCursor)
-        if (raw.length < 6 || isTechnicalContext(contextBeforeCursor, raw)) return null
+        if (isTechnicalContext(contextBeforeCursor, raw)) return null
+        hyphenatedRunTogetherWord(raw, russian)?.let { return it }
+        if (raw.length < 6) return null
         val normalized = raw.lowercase(Locale.ROOT)
         if (isKnownWord(normalized, russian)) return null
         val base = if (russian) RU_WORDS else EN_WORDS
@@ -239,6 +252,28 @@ class AdaptiveWordSuggester(context: Context, private val prefs: SharedPreferenc
         val pair = best ?: return null
         val replacement = pair.first + " " + pair.second
         return matchCase(raw, replacement)
+    }
+
+    private fun hyphenatedRunTogetherWord(raw: String, russian: Boolean): String? {
+        if (!russian || '-' in raw || raw.length < 4) return null
+        val normalized = raw.lowercase(Locale.ROOT)
+        if (isKnownWord(normalized, russian)) return null
+
+        for (suffix in listOf("нибудь", "либо", "то")) {
+            if (!normalized.endsWith(suffix)) continue
+            val stem = normalized.dropLast(suffix.length)
+            if (stem.length >= 2 && isKnownWord(stem, russian)) {
+                return matchCase(raw, "$stem-$suffix")
+            }
+        }
+
+        if (normalized.startsWith("кое") && normalized.length > 5) {
+            val tail = normalized.drop(3)
+            if (isKnownWord(tail, russian)) {
+                return matchCase(raw, "кое-$tail")
+            }
+        }
+        return null
     }
 
     private fun extractCurrentWord(text: String): String =
