@@ -77,7 +77,7 @@ class InlineImeService : InputMethodService() {
     private var restoringEditorHistory = false
     private val clipboardPrefs by lazy { getSharedPreferences("clipboard_history", MODE_PRIVATE) }
     private val wordSuggester by lazy {
-        AdaptiveWordSuggester(getSharedPreferences("adaptive_words", MODE_PRIVATE))
+        AdaptiveWordSuggester(this, getSharedPreferences("adaptive_words", MODE_PRIVATE))
     }
 
     private val suggestionProviders: List<SuggestionProvider> = listOf(
