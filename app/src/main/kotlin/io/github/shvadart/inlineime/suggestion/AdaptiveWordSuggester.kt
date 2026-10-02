@@ -18,6 +18,7 @@ class AdaptiveWordSuggester(context: Context, private val prefs: SharedPreferenc
     private val russianDictionary = RussianBloomDictionary(context)
     private val usage = mutableMapOf<String, Int>()
     private val observations = mutableMapOf<String, Int>()
+    private val personalEntries = linkedSetOf<String>()
 
     init {
         // Older builds promoted any repeated unknown token after only three uses.
@@ -39,7 +40,38 @@ class AdaptiveWordSuggester(context: Context, private val prefs: SharedPreferenc
                 if (split > 0) observations[encoded.substring(0, split)] = encoded.substring(split + 1).toIntOrNull() ?: 1
             }
         }
+        personalEntries += prefs.getStringSet(KEY_PERSONAL_ENTRIES, emptySet()).orEmpty()
     }
+
+    fun addPersonalEntry(value: String): Boolean {
+        val entry = value.trim()
+        if (entry.length < 2 || entry.length > 120 || entry.any { it == '\n' || it == '\r' }) return false
+        val existing = personalEntries.any { it.equals(entry, ignoreCase = true) }
+        if (!existing) {
+            personalEntries += entry
+            prefs.edit().putStringSet(KEY_PERSONAL_ENTRIES, personalEntries.toSet()).apply()
+        }
+        return !existing
+    }
+
+    fun personalSuggestions(contextBeforeCursor: String, limit: Int = 3): List<String> {
+        val token = extractPersonalToken(contextBeforeCursor)
+        if (token.length < 2) return emptyList()
+        return personalEntries.asSequence()
+            .filter { it.startsWith(token, ignoreCase = true) && !it.equals(token, ignoreCase = true) }
+            .sortedWith(compareBy<String> { it.length }.thenBy { it.lowercase(Locale.ROOT) })
+            .take(limit)
+            .toList()
+    }
+
+    fun personalEntryCandidate(contextBeforeCursor: String): String? {
+        val token = extractPersonalToken(contextBeforeCursor)
+        if (token.length < 2 || token.length > 120) return null
+        if (personalEntries.any { it.equals(token, ignoreCase = true) }) return null
+        return token
+    }
+
+    fun currentPersonalToken(context: String): String = extractPersonalToken(context)
 
     fun suggest(contextBeforeCursor: String, russian: Boolean, limit: Int = 3): List<WordCandidate> {
         val raw = extractCurrentWord(contextBeforeCursor)
@@ -117,6 +149,7 @@ class AdaptiveWordSuggester(context: Context, private val prefs: SharedPreferenc
         val base = if (russian) RU_WORDS else EN_WORDS
         return base.any { normalizeRussianYo(it, russian) == normalized } ||
             usage.keys.any { normalizeRussianYo(it, russian) == normalized } ||
+            personalEntries.any { normalizeRussianYo(it.lowercase(Locale.ROOT), russian) == normalized } ||
             (russian && russianDictionary.contains(normalized))
     }
 
@@ -210,6 +243,9 @@ class AdaptiveWordSuggester(context: Context, private val prefs: SharedPreferenc
 
     private fun extractCurrentWord(text: String): String =
         text.takeLastWhile { it.isLetterOrDigit() || it == '-' || it == '\'' }
+
+    private fun extractPersonalToken(text: String): String =
+        text.takeLastWhile { !it.isWhitespace() && it !in ",;!?()[]{}<>" }
 
     private fun isTechnicalContext(context: String, word: String): Boolean {
         val prefix = context.dropLast(word.length).takeLast(80)
@@ -319,6 +355,7 @@ class AdaptiveWordSuggester(context: Context, private val prefs: SharedPreferenc
     }
 
     private companion object {
+        const val KEY_PERSONAL_ENTRIES = "personal_entries"
         const val KEY_LEARNING_SCHEMA = "learning_schema"
         const val LEARNING_SCHEMA = 2
         const val COMMON_WORD_BONUS = 900
