@@ -965,11 +965,14 @@ class InlineImeService : InputMethodService() {
             }
         }
         if (personalCandidate != null) {
-            suggestionButtons.firstOrNull { it.visibility == View.VISIBLE && it.text.toString() == personalCandidate }
-                ?.setOnLongClickListener {
-                    wordSuggester.addPersonalEntry(personalCandidate)
-                    it.text = "✓ $personalCandidate"
-                    true
+            suggestionButtons
+                .firstOrNull { it.visibility == View.VISIBLE && it.text.toString() == personalCandidate }
+                ?.let { button ->
+                    button.setOnLongClickListener {
+                        wordSuggester.addPersonalEntry(personalCandidate)
+                        button.text = "✓ $personalCandidate"
+                        true
+                    }
                 }
         }
     }
