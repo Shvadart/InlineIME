@@ -28,7 +28,12 @@ import io.github.shvadart.inlineime.suggestion.SuggestionProvider
 
 class InlineImeService : InputMethodService() {
     private enum class Language { RU, EN }
-    private data class ClipboardEntry(val text: String, val pinned: Boolean)
+    private data class ClipboardEntry(
+        val text: String,
+        val pinned: Boolean,
+        val sourceLength: Int = text.length,
+        val sourceHash: Int = text.hashCode(),
+    )
     private data class EditorSnapshot(val text: String, val selectionStart: Int, val selectionEnd: Int)
 
     private var language = Language.RU
@@ -260,7 +265,7 @@ class InlineImeService : InputMethodService() {
             background = insetKeyBackground(COLOR_KEY)
         }
         val preview = TextView(this).apply {
-            text = clipboardPreview(entry.text)
+            text = clipboardPreview(entry.text, entry.sourceLength)
             maxLines = 2
             textSize = 15f
             setTextColor(COLOR_KEY_TEXT)
@@ -274,7 +279,9 @@ class InlineImeService : InputMethodService() {
         row.addView(preview, LinearLayout.LayoutParams(0, dp(58), 1f))
         row.addView(toolbarButton(if (entry.pinned) "★" else "☆").apply {
             setOnClickListener {
-                val index = clipboardEntries.indexOfFirst { it.text == entry.text }
+                val index = clipboardEntries.indexOfFirst {
+                    it.sourceLength == entry.sourceLength && it.sourceHash == entry.sourceHash
+                }
                 if (index >= 0) clipboardEntries[index] = entry.copy(pinned = !entry.pinned)
                 saveClipboardHistory()
                 showClipboardHistory()
@@ -282,7 +289,9 @@ class InlineImeService : InputMethodService() {
         }, LinearLayout.LayoutParams(dp(48), dp(58)))
         row.addView(toolbarButton("✕").apply {
             setOnClickListener {
-                clipboardEntries.removeAll { it.text == entry.text }
+                clipboardEntries.removeAll {
+                    it.sourceLength == entry.sourceLength && it.sourceHash == entry.sourceHash
+                }
                 saveClipboardHistory()
                 showClipboardHistory()
             }
@@ -304,10 +313,10 @@ class InlineImeService : InputMethodService() {
         clipboardListening = false
     }
 
-    private fun clipboardPreview(text: String): String {
+    private fun clipboardPreview(text: String, sourceLength: Int): String {
         val compact = text.replace("\r", "").replace("\n", " ↵ ")
-        if (compact.length <= CLIPBOARD_PREVIEW_LENGTH) return compact
-        return compact.take(CLIPBOARD_PREVIEW_LENGTH) + "…  [${text.length} симв.]"
+        if (compact.length <= CLIPBOARD_PREVIEW_LENGTH && sourceLength == text.length) return compact
+        return compact.take(CLIPBOARD_PREVIEW_LENGTH) + "…  [$sourceLength симв.]"
     }
 
     private fun captureClipboard(refreshUi: Boolean = true) {
@@ -317,22 +326,23 @@ class InlineImeService : InputMethodService() {
         val value = clip.getItemAt(0).coerceToText(this)?.toString()?.trimEnd() ?: return
         if (value.isBlank()) return
 
-        if (value.length > CLIPBOARD_HISTORY_ENTRY_LIMIT) {
-            // The system clipboard can still paste the complete value. Keep a bounded
-            // history copy so a very large clipboard item cannot freeze the IME.
-            val bounded = value.take(CLIPBOARD_HISTORY_ENTRY_LIMIT)
-            val existing = clipboardEntries.firstOrNull { it.text == bounded }
-            clipboardEntries.removeAll { it.text == bounded }
-            clipboardEntries.add(0, ClipboardEntry(bounded, existing?.pinned == true))
-            trimClipboardHistory()
-            saveClipboardHistory()
-            if (refreshUi && clipboardHistoryVisible) showClipboardHistory()
-            return
+        val sourceLength = value.length
+        val sourceHash = value.hashCode()
+        val storedValue = if (sourceLength > CLIPBOARD_HISTORY_ENTRY_LIMIT) {
+            value.take(CLIPBOARD_HISTORY_ENTRY_LIMIT)
+        } else {
+            value
         }
-
-        val existing = clipboardEntries.firstOrNull { it.text == value }
-        clipboardEntries.removeAll { it.text == value }
-        clipboardEntries.add(0, ClipboardEntry(value, existing?.pinned == true))
+        val existing = clipboardEntries.firstOrNull {
+            it.sourceLength == sourceLength && it.sourceHash == sourceHash
+        }
+        clipboardEntries.removeAll {
+            it.sourceLength == sourceLength && it.sourceHash == sourceHash
+        }
+        clipboardEntries.add(
+            0,
+            ClipboardEntry(storedValue, existing?.pinned == true, sourceLength, sourceHash),
+        )
         trimClipboardHistory()
         saveClipboardHistory()
         if (refreshUi && clipboardHistoryVisible) showClipboardHistory()
@@ -358,7 +368,8 @@ class InlineImeService : InputMethodService() {
                 entry.text.toByteArray(Charsets.UTF_8),
                 android.util.Base64.NO_WRAP,
             )
-            (if (entry.pinned) "1:" else "0:") + value
+            (if (entry.pinned) "1:" else "0:") +
+                entry.sourceLength + ":" + entry.sourceHash + ":" + value
         }
         clipboardPrefs.edit().putString("entries", encoded).apply()
     }
@@ -370,10 +381,19 @@ class InlineImeService : InputMethodService() {
             ?.mapNotNull { line ->
                 if (line.length < 3 || line[1] != ':') return@mapNotNull null
                 runCatching {
-                    ClipboardEntry(
-                        String(android.util.Base64.decode(line.substring(2), android.util.Base64.DEFAULT)),
-                        line[0] == '1',
-                    )
+                    val payload = line.substring(2)
+                    val parts = payload.split(":", limit = 3)
+                    if (parts.size == 3) {
+                        ClipboardEntry(
+                            String(android.util.Base64.decode(parts[2], android.util.Base64.DEFAULT)),
+                            line[0] == '1',
+                            parts[0].toInt(),
+                            parts[1].toInt(),
+                        )
+                    } else {
+                        val text = String(android.util.Base64.decode(payload, android.util.Base64.DEFAULT))
+                        ClipboardEntry(text, line[0] == '1')
+                    }
                 }.getOrNull()
             }
             ?.forEach(clipboardEntries::add)
@@ -533,6 +553,7 @@ class InlineImeService : InputMethodService() {
                 setOnTouchListener { view, event ->
                     when (event.actionMasked) {
                         MotionEvent.ACTION_DOWN -> {
+                            rememberEditorState()
                             deleteHoldStartedAt = SystemClock.uptimeMillis()
                             deleteClearTargeted = false
                             startDeleteRepeat(view)
@@ -576,8 +597,18 @@ class InlineImeService : InputMethodService() {
     }
 
     private fun deleteOne() {
-        rememberEditorState()
-        currentInputConnection?.deleteSurroundingText(1, 0)
+        val ic = currentInputConnection ?: return
+        val extracted = ic.getExtractedText(ExtractedTextRequest(), 0)
+        val start = extracted?.selectionStart ?: -1
+        val end = extracted?.selectionEnd ?: -1
+        if (start >= 0 && end >= 0 && start != end) {
+            ic.commitText("", 1)
+            selectionMode = false
+            selectionAnchor = null
+            updateSelectionButton()
+        } else {
+            ic.deleteSurroundingText(1, 0)
+        }
         syncAutoShiftFromCursor()
         refreshSuggestion()
     }
@@ -622,7 +653,6 @@ class InlineImeService : InputMethodService() {
                 .indexOfLast { it.isWhitespace() } + 1
             before.length - wordStart
         }
-        rememberEditorState()
         ic.deleteSurroundingText(count.coerceAtLeast(1), 0)
         syncAutoShiftFromCursor()
         refreshSuggestion()
@@ -807,7 +837,8 @@ class InlineImeService : InputMethodService() {
             val length = current?.text?.length ?: 0
             ic.beginBatchEdit()
             ic.setSelection(0, length)
-            ic.commitText(snapshot.text, 1)
+            if (length > 0) ic.commitText("", 1)
+            if (snapshot.text.isNotEmpty()) ic.commitText(snapshot.text, 1)
             val max = snapshot.text.length
             ic.setSelection(
                 snapshot.selectionStart.coerceIn(0, max),
