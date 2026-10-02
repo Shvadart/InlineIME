@@ -9,6 +9,7 @@ data class WordCandidate(
     val score: Int,
     val editDistance: Int,
     val prefixMatch: Boolean,
+    val typoCost: Int = editDistance * 10,
 )
 
 class AdaptiveWordSuggester(private val prefs: SharedPreferences) {
@@ -41,18 +42,22 @@ class AdaptiveWordSuggester(private val prefs: SharedPreferences) {
         return pool.asSequence()
             .filter { it != query }
             .mapNotNull { word ->
-                val distance = if (word.startsWith(query)) 0 else boundedDistance(query, word, 2)
+                val prefixMatch = word.startsWith(query)
+                val typoCost = if (prefixMatch) 0 else keyboardAwareDistance(query, word, 24)
+                val distance = if (prefixMatch) 0 else boundedDistance(query, word, 3)
                 val score = when {
-                    word.startsWith(query) -> 10_000 - (word.length - query.length) * 20
-                    distance == 1 -> 7_000
-                    distance == 2 && query.length >= 5 -> 4_000
+                    prefixMatch -> 10_000 - (word.length - query.length) * 20
+                    typoCost <= 10 -> 8_200
+                    typoCost <= 16 && query.length >= 4 -> 6_500
+                    typoCost <= 24 && query.length >= 5 -> 4_800
                     else -> return@mapNotNull null
                 } + (usage[word] ?: 0) * 120
                 WordCandidate(
                     word = matchCase(raw, word),
-                    score = score,
+                    score = score - typoCost * 20,
                     editDistance = distance,
-                    prefixMatch = word.startsWith(query),
+                    prefixMatch = prefixMatch,
+                    typoCost = typoCost,
                 )
             }
             .sortedByDescending { it.score }
@@ -92,7 +97,10 @@ class AdaptiveWordSuggester(private val prefs: SharedPreferences) {
         if (raw.length < 3 || isTechnicalContext(contextBeforeCursor, raw)) return null
         if (isKnownWord(raw, russian)) return null
         return suggest(contextBeforeCursor, russian, limit = 3)
-            .firstOrNull { !it.prefixMatch && it.editDistance == 1 }
+            .firstOrNull {
+                !it.prefixMatch &&
+                    (it.typoCost <= 16 || (raw.length >= 6 && it.typoCost <= 22))
+            }
     }
 
     fun splitRunTogetherWord(contextBeforeCursor: String, russian: Boolean): String? {
@@ -121,7 +129,7 @@ class AdaptiveWordSuggester(private val prefs: SharedPreferences) {
     }
 
     private fun extractCurrentWord(text: String): String =
-        text.takeLastWhile { it.isLetter() || it == '-' || it == '\'' }
+        text.takeLastWhile { it.isLetterOrDigit() || it == '-' || it == '\'' }
 
     private fun isTechnicalContext(context: String, word: String): Boolean {
         val prefix = context.dropLast(word.length).takeLast(80)
@@ -134,6 +142,61 @@ class AdaptiveWordSuggester(private val prefs: SharedPreferences) {
         source.firstOrNull()?.isUpperCase() == true ->
             candidate.replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.ROOT) else it.toString() }
         else -> candidate
+    }
+
+    private fun keyboardAwareDistance(a: String, b: String, maxCost: Int): Int {
+        if (kotlin.math.abs(a.length - b.length) > 3) return maxCost + 1
+        val cols = b.length + 1
+        var previousPrevious: IntArray? = null
+        var previous = IntArray(cols) { it * 10 }
+
+        for (i in a.indices) {
+            val current = IntArray(cols)
+            current[0] = (i + 1) * 10
+            var rowMin = current[0]
+            for (j in b.indices) {
+                val substitution = previous[j] + substitutionCost(a[i], b[j])
+                val insertion = current[j] + 10
+                val deletion = previous[j + 1] + if (a[i].isDigit()) 4 else 10
+                var best = min(min(insertion, deletion), substitution)
+
+                // Adjacent transposition is a very common mobile typing error.
+                if (i > 0 && j > 0 && a[i] == b[j - 1] && a[i - 1] == b[j]) {
+                    val pp = previousPrevious
+                    if (pp != null) best = min(best, pp[j - 1] + 6)
+                }
+                current[j + 1] = best
+                rowMin = min(rowMin, best)
+            }
+            if (rowMin > maxCost + 10) return maxCost + 1
+            previousPrevious = previous
+            previous = current
+        }
+        return previous[b.length]
+    }
+
+    private fun substitutionCost(from: Char, to: Char): Int {
+        if (from == to) return 0
+        if (from.isDigit() && to.isLetter()) return 6
+        if (from.isLetter() && to.isDigit()) return 6
+        return if (areKeyboardNeighbors(from.lowercaseChar(), to.lowercaseChar())) 5 else 10
+    }
+
+    private fun areKeyboardNeighbors(a: Char, b: Char): Boolean {
+        val rows = if (a in RU_KEY_POSITIONS || b in RU_KEY_POSITIONS) RU_KEY_ROWS else EN_KEY_ROWS
+        val pa = keyPosition(rows, a) ?: return false
+        val pb = keyPosition(rows, b) ?: return false
+        val rowDelta = kotlin.math.abs(pa.first - pb.first)
+        val colDelta = kotlin.math.abs(pa.second - pb.second)
+        return rowDelta <= 1 && colDelta <= 1
+    }
+
+    private fun keyPosition(rows: List<String>, char: Char): Pair<Int, Int>? {
+        rows.forEachIndexed { row, keys ->
+            val col = keys.indexOf(char)
+            if (col >= 0) return row to col
+        }
+        return null
     }
 
     private fun boundedDistance(a: String, b: String, max: Int): Int {
@@ -168,6 +231,9 @@ class AdaptiveWordSuggester(private val prefs: SharedPreferences) {
         const val KEY_USAGE = "word_usage"
         const val KEY_OBSERVATIONS = "word_observations"
         const val TRUST_AFTER_OBSERVATIONS = 3
+        val RU_KEY_ROWS = listOf("йцукенгшщзхъ", "фывапролджэ", "ячсмитьбю")
+        val EN_KEY_ROWS = listOf("qwertyuiop", "asdfghjkl", "zxcvbnm")
+        val RU_KEY_POSITIONS = RU_KEY_ROWS.joinToString("").toSet()
 
         val RU_WORDS = setOf(
             "а","без","больше","будет","бы","был","была","были","быть","вам","вас","ваш","ведь","весь","вместе",
@@ -177,7 +243,9 @@ class AdaptiveWordSuggester(private val prefs: SharedPreferences) {
             "они","оно","от","очень","по","пока","после","почему","при","привет","просто","раз","с","сам","сейчас","сделать",
             "сказать","так","также","там","тебе","тебя","теперь","то","тоже","только","тут","ты","у","уже","хорошо","хочу",
             "чего","чем","что","чтобы","это","этого","этот","я","работает","работать","сервер","клавиатура","текст","слово",
-            "слова","нужно","нормально","готово","отлично","спасибо","сегодня","завтра","потом","вопрос","ответ","проверить"
+            "слова","нужно","нормально","готово","отлично","спасибо","сегодня","завтра","потом","вопрос","ответ","проверить",
+            "работа","работы","работу","печатать","печатаю","печатал","вручную","ошибка","ошибки","ошибку","исправить",
+            "исправлять","замена","заменить","автоматически","автоматическая","предложение","предложения","разделить"
         )
         val EN_WORDS = setOf(
             "a","about","after","again","all","also","and","any","are","as","at","back","be","because","been","before",
