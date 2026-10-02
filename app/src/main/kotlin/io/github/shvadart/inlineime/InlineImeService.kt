@@ -1,5 +1,7 @@
 package io.github.shvadart.inlineime
 
+import android.content.ClipDescription
+import android.content.ClipboardManager
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -18,6 +20,7 @@ import android.view.inputmethod.ExtractedTextRequest
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.PopupWindow
+import android.widget.ScrollView
 import android.widget.TextView
 import io.github.shvadart.inlineime.suggestion.CalculatorSuggestionProvider
 import io.github.shvadart.inlineime.suggestion.Suggestion
@@ -25,6 +28,7 @@ import io.github.shvadart.inlineime.suggestion.SuggestionProvider
 
 class InlineImeService : InputMethodService() {
     private enum class Language { RU, EN }
+    private data class ClipboardEntry(val text: String, val pinned: Boolean)
 
     private var language = Language.RU
     private var shift = true
@@ -35,6 +39,7 @@ class InlineImeService : InputMethodService() {
     private var lastShiftTap = 0L
 
     private lateinit var lettersContainer: LinearLayout
+    private lateinit var keyboardContent: LinearLayout
     private lateinit var suggestionButton: TextView
     private lateinit var selectButton: TextView
     private lateinit var languageButton: TextView
@@ -48,6 +53,10 @@ class InlineImeService : InputMethodService() {
     private var deleteClearTargeted = false
 
     private var activeSuggestion: Suggestion? = null
+    private val clipboardEntries = mutableListOf<ClipboardEntry>()
+    private val clipboardListener = ClipboardManager.OnPrimaryClipChangedListener { captureClipboard() }
+    private var clipboardListening = false
+    private val clipboardPrefs by lazy { getSharedPreferences("clipboard_history", MODE_PRIVATE) }
 
     private val suggestionProviders: List<SuggestionProvider> = listOf(
         CalculatorSuggestionProvider(),
@@ -84,24 +93,27 @@ class InlineImeService : InputMethodService() {
         }
         root.addView(suggestionButton, rowParams(dp(42)))
 
-        root.addView(
-            buildEqualRow("1234567890".map { it.toString() }, ::commitTextKey, dp(48)),
-        )
-
-        lettersContainer = LinearLayout(this).apply {
+        keyboardContent = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
         }
-        root.addView(lettersContainer)
+        root.addView(keyboardContent)
 
-        root.addView(buildBottomRow())
-        renderLetterRows()
+        showKeyboardContent()
 
         return root
     }
 
     override fun onStartInputView(info: android.view.inputmethod.EditorInfo?, restarting: Boolean) {
         super.onStartInputView(info, restarting)
+        loadClipboardHistory()
+        startClipboardHistory()
+        captureClipboard()
         refreshSuggestion()
+    }
+
+    override fun onFinishInputView(finishingInput: Boolean) {
+        stopClipboardHistory()
+        super.onFinishInputView(finishingInput)
     }
 
     override fun onUpdateSelection(
@@ -157,10 +169,185 @@ class InlineImeService : InputMethodService() {
         add("→") { sendNavigation(KeyEvent.KEYCODE_DPAD_RIGHT) }
         add("↓") { sendNavigation(KeyEvent.KEYCODE_DPAD_DOWN) }
         add("⧉") { performContextAction(android.R.id.copy) }
-        add("▤") { pasteFast() }
+
+        val pasteButton = toolbarButton("▤").apply {
+            setOnClickListener { pasteFast() }
+            setOnLongClickListener {
+                performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+                showClipboardHistory()
+                true
+            }
+        }
+        row.addView(pasteButton, LinearLayout.LayoutParams(0, dp(40), 1f))
+
         add("→|") { moveToBoundary(toEnd = true) }
 
         return row
+    }
+
+    private fun showKeyboardContent() {
+        if (!::keyboardContent.isInitialized) return
+        keyboardContent.removeAllViews()
+        keyboardContent.addView(
+            buildEqualRow("1234567890".map { it.toString() }, ::commitTextKey, dp(48)),
+        )
+        lettersContainer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        keyboardContent.addView(lettersContainer)
+        keyboardContent.addView(buildBottomRow())
+        renderLetterRows()
+    }
+
+    private fun showClipboardHistory() {
+        if (!::keyboardContent.isInitialized) return
+        captureClipboard()
+        keyboardContent.removeAllViews()
+
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        header.addView(toolbarButton("←").apply {
+            setOnClickListener { showKeyboardContent() }
+        }, LinearLayout.LayoutParams(dp(52), dp(44)))
+        header.addView(TextView(this).apply {
+            text = "Буфер обмена"
+            textSize = 17f
+            setTextColor(COLOR_KEY_TEXT)
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(8), 0, 0, 0)
+        }, LinearLayout.LayoutParams(0, dp(44), 1f))
+        header.addView(toolbarButton("Очистить").apply {
+            textSize = 14f
+            setOnClickListener {
+                clipboardEntries.removeAll { !it.pinned }
+                saveClipboardHistory()
+                showClipboardHistory()
+            }
+        }, LinearLayout.LayoutParams(dp(92), dp(44)))
+        keyboardContent.addView(header)
+
+        val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val ordered = clipboardEntries.sortedWith(
+            compareByDescending<ClipboardEntry> { it.pinned },
+        )
+        if (ordered.isEmpty()) {
+            list.addView(TextView(this).apply {
+                text = "История пока пуста"
+                gravity = Gravity.CENTER
+                textSize = 16f
+                setTextColor(COLOR_TOOLBAR_TEXT)
+            }, rowParams(dp(120)))
+        } else {
+            ordered.forEach { entry -> list.addView(clipboardHistoryRow(entry)) }
+        }
+        keyboardContent.addView(ScrollView(this).apply { addView(list) },
+            LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(220)))
+    }
+
+    private fun clipboardHistoryRow(entry: ClipboardEntry): View {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = insetKeyBackground(COLOR_KEY)
+        }
+        val preview = TextView(this).apply {
+            text = entry.text.replace("\n", " ").take(CLIPBOARD_PREVIEW_LENGTH)
+            maxLines = 2
+            textSize = 15f
+            setTextColor(COLOR_KEY_TEXT)
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(12), dp(5), dp(8), dp(5))
+            setOnClickListener {
+                pasteText(entry.text)
+                showKeyboardContent()
+            }
+        }
+        row.addView(preview, LinearLayout.LayoutParams(0, dp(58), 1f))
+        row.addView(toolbarButton(if (entry.pinned) "★" else "☆").apply {
+            setOnClickListener {
+                val index = clipboardEntries.indexOfFirst { it.text == entry.text }
+                if (index >= 0) clipboardEntries[index] = entry.copy(pinned = !entry.pinned)
+                saveClipboardHistory()
+                showClipboardHistory()
+            }
+        }, LinearLayout.LayoutParams(dp(48), dp(58)))
+        row.addView(toolbarButton("✕").apply {
+            setOnClickListener {
+                clipboardEntries.removeAll { it.text == entry.text }
+                saveClipboardHistory()
+                showClipboardHistory()
+            }
+        }, LinearLayout.LayoutParams(dp(48), dp(58)))
+        return row
+    }
+
+    private fun startClipboardHistory() {
+        if (clipboardListening) return
+        getSystemService(ClipboardManager::class.java)
+            .addPrimaryClipChangedListener(clipboardListener)
+        clipboardListening = true
+    }
+
+    private fun stopClipboardHistory() {
+        if (!clipboardListening) return
+        getSystemService(ClipboardManager::class.java)
+            .removePrimaryClipChangedListener(clipboardListener)
+        clipboardListening = false
+    }
+
+    private fun captureClipboard() {
+        val clipboard = getSystemService(ClipboardManager::class.java)
+        val clip = clipboard.primaryClip ?: return
+        if (clip.itemCount == 0 || isSensitiveClipboard(clip.description)) return
+        val value = clip.getItemAt(0).coerceToText(this)?.toString()?.trimEnd() ?: return
+        if (value.isBlank()) return
+
+        val existing = clipboardEntries.firstOrNull { it.text == value }
+        clipboardEntries.removeAll { it.text == value }
+        clipboardEntries.add(0, ClipboardEntry(value, existing?.pinned == true))
+        trimClipboardHistory()
+        saveClipboardHistory()
+    }
+
+    private fun isSensitiveClipboard(description: ClipDescription): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return false
+        return description.extras?.getBoolean(ClipDescription.EXTRA_IS_SENSITIVE, false) == true
+    }
+
+    private fun trimClipboardHistory() {
+        var unpinned = 0
+        val iterator = clipboardEntries.iterator()
+        while (iterator.hasNext()) {
+            val entry = iterator.next()
+            if (!entry.pinned && ++unpinned > CLIPBOARD_HISTORY_LIMIT) iterator.remove()
+        }
+    }
+
+    private fun saveClipboardHistory() {
+        val encoded = clipboardEntries.joinToString("\n") { entry ->
+            val value = android.util.Base64.encodeToString(
+                entry.text.toByteArray(Charsets.UTF_8),
+                android.util.Base64.NO_WRAP,
+            )
+            (if (entry.pinned) "1:" else "0:") + value
+        }
+        clipboardPrefs.edit().putString("entries", encoded).apply()
+    }
+
+    private fun loadClipboardHistory() {
+        if (clipboardEntries.isNotEmpty()) return
+        clipboardPrefs.getString("entries", null)
+            ?.lineSequence()
+            ?.mapNotNull { line ->
+                if (line.length < 3 || line[1] != ':') return@mapNotNull null
+                runCatching {
+                    ClipboardEntry(
+                        String(android.util.Base64.decode(line.substring(2), android.util.Base64.DEFAULT)),
+                        line[0] == '1',
+                    )
+                }.getOrNull()
+            }
+            ?.forEach(clipboardEntries::add)
     }
 
     private fun buildBottomRow(): View {
@@ -523,19 +710,17 @@ class InlineImeService : InputMethodService() {
     }
 
     private fun pasteFast() {
-        val ic = currentInputConnection ?: return
-        val clipboard = getSystemService(android.content.ClipboardManager::class.java)
+        val clipboard = getSystemService(ClipboardManager::class.java)
         val item = clipboard.primaryClip?.getItemAt(0) ?: return
         val text = item.coerceToText(this)?.toString() ?: return
+        pasteText(text)
+    }
 
-        // Some editors (notably terminal emulators) report the Android paste
-        // context action as handled without actually inserting clipboard text.
-        // Commit the clipboard contents through InputConnection instead.
+    private fun pasteText(text: String) {
+        val ic = currentInputConnection ?: return
         ic.beginBatchEdit()
         try {
-            text.chunked(PASTE_CHUNK_SIZE).forEach { chunk ->
-                ic.commitText(chunk, 1)
-            }
+            text.chunked(PASTE_CHUNK_SIZE).forEach { chunk -> ic.commitText(chunk, 1) }
         } finally {
             ic.endBatchEdit()
         }
@@ -688,6 +873,8 @@ class InlineImeService : InputMethodService() {
 
     private companion object {
         const val PASTE_CHUNK_SIZE = 8 * 1024
+        const val CLIPBOARD_HISTORY_LIMIT = 20
+        const val CLIPBOARD_PREVIEW_LENGTH = 120
         const val DOUBLE_TAP_MS = 500L
         const val DELETE_REPEAT_START_MS = 350L
         const val DELETE_CLEAR_POPUP_MS = 450L
