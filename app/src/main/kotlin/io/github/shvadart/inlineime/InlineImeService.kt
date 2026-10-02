@@ -56,6 +56,7 @@ class InlineImeService : InputMethodService() {
     private val clipboardEntries = mutableListOf<ClipboardEntry>()
     private val clipboardListener = ClipboardManager.OnPrimaryClipChangedListener { captureClipboard() }
     private var clipboardListening = false
+    private var clipboardHistoryVisible = false
     private val clipboardPrefs by lazy { getSharedPreferences("clipboard_history", MODE_PRIVATE) }
 
     private val suggestionProviders: List<SuggestionProvider> = listOf(
@@ -149,6 +150,7 @@ class InlineImeService : InputMethodService() {
         }
 
         add("|←") { moveToBoundary(toEnd = false) }
+        add("↶") { performEditorHistory(undo = true) }
         add("▣") { performContextAction(android.R.id.selectAll) }
         add("↑") { sendNavigation(KeyEvent.KEYCODE_DPAD_UP) }
         add("←") { sendNavigation(KeyEvent.KEYCODE_DPAD_LEFT) }
@@ -180,6 +182,7 @@ class InlineImeService : InputMethodService() {
         }
         row.addView(pasteButton, LinearLayout.LayoutParams(0, dp(40), 1f))
 
+        add("↷") { performEditorHistory(undo = false) }
         add("→|") { moveToBoundary(toEnd = true) }
 
         return row
@@ -187,6 +190,7 @@ class InlineImeService : InputMethodService() {
 
     private fun showKeyboardContent() {
         if (!::keyboardContent.isInitialized) return
+        clipboardHistoryVisible = false
         keyboardContent.removeAllViews()
         keyboardContent.addView(
             buildEqualRow("1234567890".map { it.toString() }, ::commitTextKey, dp(48)),
@@ -199,7 +203,8 @@ class InlineImeService : InputMethodService() {
 
     private fun showClipboardHistory() {
         if (!::keyboardContent.isInitialized) return
-        captureClipboard()
+        clipboardHistoryVisible = true
+        captureClipboard(refreshUi = false)
         keyboardContent.removeAllViews()
 
         val header = LinearLayout(this).apply {
@@ -295,7 +300,7 @@ class InlineImeService : InputMethodService() {
         clipboardListening = false
     }
 
-    private fun captureClipboard() {
+    private fun captureClipboard(refreshUi: Boolean = true) {
         val clipboard = getSystemService(ClipboardManager::class.java)
         val clip = clipboard.primaryClip ?: return
         if (clip.itemCount == 0 || isSensitiveClipboard(clip.description)) return
@@ -307,6 +312,7 @@ class InlineImeService : InputMethodService() {
         clipboardEntries.add(0, ClipboardEntry(value, existing?.pinned == true))
         trimClipboardHistory()
         saveClipboardHistory()
+        if (refreshUi && clipboardHistoryVisible) showClipboardHistory()
     }
 
     private fun isSensitiveClipboard(description: ClipDescription): Boolean {
@@ -732,6 +738,26 @@ class InlineImeService : InputMethodService() {
         refreshSuggestion()
     }
 
+    private fun performEditorHistory(undo: Boolean) {
+        val ic = currentInputConnection ?: return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val action = if (undo) android.R.id.undo else android.R.id.redo
+            if (ic.performContextMenuAction(action)) {
+                refreshSuggestion()
+                return
+            }
+        }
+
+        // Fallback for editors that expose Ctrl+Z / Ctrl+Y but not Android's
+        // context-menu undo/redo actions.
+        val keyCode = if (undo) KeyEvent.KEYCODE_Z else KeyEvent.KEYCODE_Y
+        val now = SystemClock.uptimeMillis()
+        val meta = KeyEvent.META_CTRL_ON
+        ic.sendKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_DOWN, keyCode, 0, meta))
+        ic.sendKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_UP, keyCode, 0, meta))
+        refreshSuggestion()
+    }
+
     private fun sendNavigation(keyCode: Int, useSelectionMeta: Boolean = true) {
         val ic = currentInputConnection ?: return
         if (selectionMode && useSelectionMeta) {
@@ -873,7 +899,7 @@ class InlineImeService : InputMethodService() {
 
     private companion object {
         const val PASTE_CHUNK_SIZE = 8 * 1024
-        const val CLIPBOARD_HISTORY_LIMIT = 20
+        const val CLIPBOARD_HISTORY_LIMIT = 50
         const val CLIPBOARD_PREVIEW_LENGTH = 120
         const val DOUBLE_TAP_MS = 500L
         const val DELETE_REPEAT_START_MS = 350L
