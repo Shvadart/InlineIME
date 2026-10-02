@@ -45,7 +45,7 @@ class AdaptiveWordSuggester(context: Context, private val prefs: SharedPreferenc
             // The full 2.35M-form dictionary now participates in correction,
             // without scanning it: generate plausible edits and validate them
             // against the compact membership index.
-            if (russian) addAll(russianDictionary.candidates(query, limit = 16))
+            if (russian) addAll(russianDictionary.candidates(query, limit = 128))
         }
 
         return pool.asSequence()
@@ -142,7 +142,7 @@ class AdaptiveWordSuggester(context: Context, private val prefs: SharedPreferenc
     private fun autocorrectSingleWord(raw: String, russian: Boolean): WordCandidate? {
         if (raw.length < 4 || isKnownWord(raw, russian)) return null
         val syntheticContext = raw
-        val candidates = suggest(syntheticContext, russian, limit = 3)
+        val candidates = suggest(syntheticContext, russian, limit = 12)
             .filter { !it.prefixMatch }
         val best = candidates.firstOrNull() ?: return null
         val runnerUp = candidates.getOrNull(1)
@@ -150,7 +150,8 @@ class AdaptiveWordSuggester(context: Context, private val prefs: SharedPreferenc
         val threshold = when {
             raw.length == 4 -> 10
             raw.length == 5 -> 16
-            else -> 22
+            raw.length in 6..7 -> 24
+            else -> 30
         }
         if (best.typoCost > threshold) return null
         if (raw.length <= 5 && runnerUp != null && best.score - runnerUp.score < 500) return null
