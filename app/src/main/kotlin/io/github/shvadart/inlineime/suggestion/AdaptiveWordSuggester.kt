@@ -96,11 +96,25 @@ class AdaptiveWordSuggester(private val prefs: SharedPreferences) {
         val raw = extractCurrentWord(contextBeforeCursor)
         if (raw.length < 3 || isTechnicalContext(contextBeforeCursor, raw)) return null
         if (isKnownWord(raw, russian)) return null
-        return suggest(contextBeforeCursor, russian, limit = 3)
-            .firstOrNull {
-                !it.prefixMatch &&
-                    (it.typoCost <= 16 || (raw.length >= 6 && it.typoCost <= 22))
-            }
+        val candidates = suggest(contextBeforeCursor, russian, limit = 3)
+            .filter { !it.prefixMatch }
+        val best = candidates.firstOrNull() ?: return null
+        val runnerUp = candidates.getOrNull(1)
+
+        // Short words are extremely ambiguous ("а", "в", "на", "как", "так"...).
+        // Never auto-replace them from fuzzy distance alone.
+        if (raw.length <= 3) return null
+
+        val threshold = when {
+            raw.length == 4 -> 10
+            raw.length == 5 -> 16
+            else -> 22
+        }
+        if (best.typoCost > threshold) return null
+
+        // For short/medium words require a clear lead over another plausible candidate.
+        if (raw.length <= 5 && runnerUp != null && best.score - runnerUp.score < 500) return null
+        return best
     }
 
     fun splitRunTogetherWord(contextBeforeCursor: String, russian: Boolean): String? {
