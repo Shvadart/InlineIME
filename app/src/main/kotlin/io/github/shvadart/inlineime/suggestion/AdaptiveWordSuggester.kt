@@ -11,6 +11,7 @@ data class WordCandidate(
     val editDistance: Int,
     val prefixMatch: Boolean,
     val typoCost: Int = editDistance * 10,
+    val commonWord: Boolean = false,
 )
 
 class AdaptiveWordSuggester(context: Context, private val prefs: SharedPreferences) {
@@ -66,6 +67,7 @@ class AdaptiveWordSuggester(context: Context, private val prefs: SharedPreferenc
                 val prefixMatch = comparableWord.startsWith(query)
                 val typoCost = if (prefixMatch) 0 else keyboardAwareDistance(query, comparableWord, 34)
                 val distance = if (prefixMatch) 0 else boundedDistance(query, comparableWord, 3)
+                val commonWord = base.any { normalizeRussianYo(it, russian) == comparableWord }
                 val score = when {
                     prefixMatch -> 10_000 - (word.length - query.length) * 20
                     typoCost <= 10 -> 8_200
@@ -74,13 +76,14 @@ class AdaptiveWordSuggester(context: Context, private val prefs: SharedPreferenc
                     typoCost <= 30 && query.length >= 7 -> 3_900
                     typoCost <= 34 && query.length >= 9 -> 3_200
                     else -> return@mapNotNull null
-                } + (usage[word] ?: 0) * 120
+                } + (usage[word] ?: 0) * 120 + if (commonWord) COMMON_WORD_BONUS else 0
                 WordCandidate(
                     word = matchCase(raw, word),
                     score = score - typoCost * 20,
                     editDistance = distance,
                     prefixMatch = prefixMatch,
                     typoCost = typoCost,
+                    commonWord = commonWord,
                 )
             }
             .sortedByDescending { it.score }
@@ -153,7 +156,7 @@ class AdaptiveWordSuggester(context: Context, private val prefs: SharedPreferenc
     }
 
     private fun autocorrectSingleWord(raw: String, russian: Boolean): WordCandidate? {
-        if (raw.length < 4 || isKnownWord(raw, russian)) return null
+        if (raw.length < 3 || isKnownWord(raw, russian)) return null
         val syntheticContext = raw
         val candidates = suggest(syntheticContext, russian, limit = 12)
             .filter { !it.prefixMatch }
@@ -161,6 +164,7 @@ class AdaptiveWordSuggester(context: Context, private val prefs: SharedPreferenc
         val runnerUp = candidates.getOrNull(1)
 
         val threshold = when {
+            raw.length == 3 -> 10
             raw.length == 4 -> 10
             raw.length == 5 -> 16
             raw.length in 6..7 -> 24
@@ -168,7 +172,14 @@ class AdaptiveWordSuggester(context: Context, private val prefs: SharedPreferenc
             else -> 34
         }
         if (best.typoCost > threshold) return null
-        if (raw.length <= 5 && runnerUp != null && best.score - runnerUp.score < 500) return null
+
+        // Three-letter words are inherently ambiguous. Auto-replace them only
+        // when the winner is in our compact high-frequency vocabulary. This
+        // catches mobile slips such as "воь" -> "вот" and "чть" -> "что"
+        // without allowing arbitrary rare dictionary forms to rewrite short text.
+        if (raw.length == 3 && !best.commonWord) return null
+
+        if (raw.length <= 5 && runnerUp != null && best.score - runnerUp.score < MIN_AUTOCORRECT_MARGIN) return null
         return best
     }
 
@@ -302,6 +313,8 @@ class AdaptiveWordSuggester(context: Context, private val prefs: SharedPreferenc
     private companion object {
         const val KEY_LEARNING_SCHEMA = "learning_schema"
         const val LEARNING_SCHEMA = 2
+        const val COMMON_WORD_BONUS = 900
+        const val MIN_AUTOCORRECT_MARGIN = 500
         const val KEY_USAGE = "word_usage"
         const val KEY_OBSERVATIONS = "word_observations"
         const val TRUST_AFTER_OBSERVATIONS = 3
@@ -338,7 +351,7 @@ class AdaptiveWordSuggester(context: Context, private val prefs: SharedPreferenc
             "сюда","туда","откуда","потом","раньше","позже","иногда","часто","редко","обычно","конечно","возможно",
             "точно","почти","совсем","немного","много","мало","достаточно","быстро","медленно","долго","легко","сложно",
             "новый","новая","новое","новые","старый","большой","маленький","хороший","плохой","первый","последний",
-            "другой","другая","другое","другие","следующий","следующая","каждый","каждая","любой","нужный","нужная",
+            "другой","другая","другое","другие","следующий","следующая","каждый","каждая","каждое","каждом","каждого","каждому","каждым","каждую","каждые","каждых","любой","нужный","нужная",
             "русский","русская","английский","буква","буквы","буквой","букве","словарь","словаря","словаре","словари",
             "слово","словом","словах","текста","тексте","писать","печатать","напечатать","исправление","исправления",
             "замены","заменяет","заменил","заменила","исправляет","исправил","исправила","автозамена","подсказка",
