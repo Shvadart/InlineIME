@@ -210,10 +210,10 @@ class InlineImeService : InputMethodService() {
         renderLetterRows()
     }
 
-    private fun showClipboardHistory() {
+    private fun showClipboardHistory(captureCurrent: Boolean = true) {
         if (!::keyboardContent.isInitialized) return
         clipboardHistoryVisible = true
-        captureClipboard(refreshUi = false)
+        if (captureCurrent) captureClipboard(refreshUi = false)
         keyboardContent.removeAllViews()
 
         val header = LinearLayout(this).apply {
@@ -235,7 +235,7 @@ class InlineImeService : InputMethodService() {
             setOnClickListener {
                 clipboardEntries.removeAll { !it.pinned }
                 saveClipboardHistory()
-                showClipboardHistory()
+                showClipboardHistory(captureCurrent = false)
             }
         }, LinearLayout.LayoutParams(dp(92), dp(44)))
         keyboardContent.addView(header)
@@ -293,7 +293,7 @@ class InlineImeService : InputMethodService() {
                     it.sourceLength == entry.sourceLength && it.sourceHash == entry.sourceHash
                 }
                 saveClipboardHistory()
-                showClipboardHistory()
+                showClipboardHistory(captureCurrent = false)
             }
         }, LinearLayout.LayoutParams(dp(48), dp(58)))
         return row
@@ -576,6 +576,9 @@ class InlineImeService : InputMethodService() {
                                 clearAllText()
                             } else if (!wasRepeating) {
                                 deleteOne()
+                            } else {
+                                syncAutoShiftFromCursor()
+                                refreshSuggestion()
                             }
                             dismissDeleteClearPopup()
                             view.performClick()
@@ -596,12 +599,10 @@ class InlineImeService : InputMethodService() {
         return row
     }
 
-    private fun deleteOne() {
+    private fun deleteOne(refresh: Boolean = true) {
         val ic = currentInputConnection ?: return
-        val extracted = ic.getExtractedText(ExtractedTextRequest(), 0)
-        val start = extracted?.selectionStart ?: -1
-        val end = extracted?.selectionEnd ?: -1
-        if (start >= 0 && end >= 0 && start != end) {
+        val selected = ic.getSelectedText(0)
+        if (!selected.isNullOrEmpty()) {
             ic.commitText("", 1)
             selectionMode = false
             selectionAnchor = null
@@ -609,8 +610,10 @@ class InlineImeService : InputMethodService() {
         } else {
             ic.deleteSurroundingText(1, 0)
         }
-        syncAutoShiftFromCursor()
-        refreshSuggestion()
+        if (refresh) {
+            syncAutoShiftFromCursor()
+            refreshSuggestion()
+        }
     }
 
     private fun startDeleteRepeat(anchor: View) {
@@ -622,7 +625,8 @@ class InlineImeService : InputMethodService() {
                     showDeleteClearPopup(anchor)
                 }
                 if (!deleteClearTargeted && elapsed >= DELETE_REPEAT_START_MS) {
-                    if (elapsed >= DELETE_WORD_MODE_MS) deleteWordBeforeCursor() else deleteOne()
+                    if (elapsed >= DELETE_WORD_MODE_MS) deleteWordBeforeCursor(refresh = false)
+                    else deleteOne(refresh = false)
                 }
                 val delay = when {
                     elapsed >= DELETE_WORD_MODE_MS -> DELETE_WORD_INTERVAL_MS
@@ -641,7 +645,7 @@ class InlineImeService : InputMethodService() {
         deleteRepeatRunnable = null
     }
 
-    private fun deleteWordBeforeCursor() {
+    private fun deleteWordBeforeCursor(refresh: Boolean = true) {
         val ic = currentInputConnection ?: return
         val before = ic.getTextBeforeCursor(128, 0)?.toString().orEmpty()
         if (before.isEmpty()) return
@@ -654,8 +658,10 @@ class InlineImeService : InputMethodService() {
             before.length - wordStart
         }
         ic.deleteSurroundingText(count.coerceAtLeast(1), 0)
-        syncAutoShiftFromCursor()
-        refreshSuggestion()
+        if (refresh) {
+            syncAutoShiftFromCursor()
+            refreshSuggestion()
+        }
     }
 
     private fun showDeleteClearPopup(anchor: View) {
@@ -668,6 +674,9 @@ class InlineImeService : InputMethodService() {
         }
         deleteClearPopup = PopupWindow(label, anchor.width, dp(60), false).apply {
             isTouchable = false
+            isFocusable = false
+            isOutsideTouchable = false
+            inputMethodMode = PopupWindow.INPUT_METHOD_NOT_NEEDED
             isClippingEnabled = false
             showAsDropDown(anchor, 0, -anchor.height - dp(64))
         }
@@ -853,6 +862,14 @@ class InlineImeService : InputMethodService() {
     }
 
     private fun performEditorHistory(undo: Boolean) {
+        val ic = currentInputConnection ?: return
+        val nativeAction = if (undo) android.R.id.undo else android.R.id.redo
+        if (ic.performContextMenuAction(nativeAction)) {
+            syncAutoShiftFromCursor()
+            refreshSuggestion()
+            return
+        }
+
         val current = currentEditorSnapshot() ?: return
         val source = if (undo) undoStack else redoStack
         val destination = if (undo) redoStack else undoStack
