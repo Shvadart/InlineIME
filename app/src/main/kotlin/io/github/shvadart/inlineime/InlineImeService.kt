@@ -22,6 +22,7 @@ import android.widget.LinearLayout
 import android.widget.PopupWindow
 import android.widget.ScrollView
 import android.widget.TextView
+import io.github.shvadart.inlineime.suggestion.AdaptiveWordSuggester
 import io.github.shvadart.inlineime.suggestion.CalculatorSuggestionProvider
 import io.github.shvadart.inlineime.suggestion.Suggestion
 import io.github.shvadart.inlineime.suggestion.SuggestionProvider
@@ -46,7 +47,8 @@ class InlineImeService : InputMethodService() {
 
     private lateinit var lettersContainer: LinearLayout
     private lateinit var keyboardContent: LinearLayout
-    private lateinit var suggestionButton: TextView
+    private lateinit var suggestionRow: LinearLayout
+    private val suggestionButtons = mutableListOf<TextView>()
     private lateinit var selectButton: TextView
     private lateinit var languageButton: TextView
     private lateinit var shiftButton: TextView
@@ -68,6 +70,9 @@ class InlineImeService : InputMethodService() {
     private val redoStack = ArrayDeque<EditorSnapshot>()
     private var restoringEditorHistory = false
     private val clipboardPrefs by lazy { getSharedPreferences("clipboard_history", MODE_PRIVATE) }
+    private val wordSuggester by lazy {
+        AdaptiveWordSuggester(getSharedPreferences("adaptive_words", MODE_PRIVATE))
+    }
 
     private val suggestionProviders: List<SuggestionProvider> = listOf(
         CalculatorSuggestionProvider(),
@@ -105,15 +110,17 @@ class InlineImeService : InputMethodService() {
 
         root.addView(buildEditingToolbar(), rowParams(dp(44)))
 
-        suggestionButton = suggestionView().apply {
+        suggestionRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
             visibility = View.GONE
-            setOnClickListener {
-                val suggestion = activeSuggestion ?: return@setOnClickListener
-                currentInputConnection?.commitText(suggestion.text, 1)
-                refreshSuggestion()
-            }
         }
-        root.addView(suggestionButton, rowParams(dp(42)))
+        repeat(3) {
+            val button = suggestionView()
+            suggestionButtons += button
+            suggestionRow.addView(button, LinearLayout.LayoutParams(0, dp(42), 1f))
+        }
+        root.addView(suggestionRow, rowParams(dp(42)))
 
         keyboardContent = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -755,6 +762,10 @@ class InlineImeService : InputMethodService() {
     }
 
     private fun commitTextKey(text: String) {
+        val before = currentInputConnection?.getTextBeforeCursor(256, 0)?.toString().orEmpty()
+        if (text.any { it.isWhitespace() || it in ".,!?;:" }) {
+            wordSuggester.observeCommittedWord(wordSuggester.currentWord(before))
+        }
         rememberEditorState()
         currentInputConnection?.commitText(text, 1)
         syncAutoShiftFromCursor()
@@ -817,7 +828,7 @@ class InlineImeService : InputMethodService() {
     }
 
     private fun refreshSuggestion() {
-        if (!::suggestionButton.isInitialized) return
+        if (!::suggestionRow.isInitialized) return
         val beforeCursor = currentInputConnection
             ?.getTextBeforeCursor(256, 0)
             ?.toString()
@@ -827,16 +838,55 @@ class InlineImeService : InputMethodService() {
             provider.suggest(beforeCursor)
         }
 
-        val suggestion = activeSuggestion
-        suggestionButton.apply {
-            if (suggestion == null) {
-                text = ""
-                visibility = View.GONE
+        val calculator = activeSuggestion
+        if (calculator != null) {
+            showSuggestionChoices(listOf(calculator.text)) { choice ->
+                rememberEditorState()
+                currentInputConnection?.commitText(choice, 1)
+                refreshSuggestion()
+            }
+            return
+        }
+
+        val candidates = wordSuggester
+            .suggest(beforeCursor, russian = language == Language.RU, limit = 3)
+            .map { it.word }
+
+        if (candidates.isEmpty()) {
+            suggestionRow.visibility = View.GONE
+            suggestionButtons.forEach { it.visibility = View.GONE }
+            return
+        }
+
+        showSuggestionChoices(candidates) { choice -> applyWordSuggestion(beforeCursor, choice) }
+    }
+
+    private fun showSuggestionChoices(choices: List<String>, onChoice: (String) -> Unit) {
+        suggestionRow.visibility = View.VISIBLE
+        suggestionButtons.forEachIndexed { index, button ->
+            val choice = choices.getOrNull(index)
+            if (choice == null) {
+                button.text = ""
+                button.visibility = View.GONE
+                button.setOnClickListener(null)
             } else {
-                text = suggestion.text
-                visibility = View.VISIBLE
+                button.text = choice
+                button.visibility = View.VISIBLE
+                button.setOnClickListener { onChoice(choice) }
             }
         }
+    }
+
+    private fun applyWordSuggestion(beforeCursor: String, replacement: String) {
+        val ic = currentInputConnection ?: return
+        val currentWord = wordSuggester.currentWord(beforeCursor)
+        if (currentWord.isEmpty()) return
+        rememberEditorState()
+        ic.deleteSurroundingText(currentWord.length, 0)
+        ic.commitText(replacement, 1)
+        wordSuggester.observeCommittedWord(replacement)
+        syncAutoShiftFromCursor()
+        refreshSuggestion()
     }
 
     private fun pasteFast() {
