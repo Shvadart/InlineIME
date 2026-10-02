@@ -30,6 +30,9 @@ class AdaptiveWordSuggester(private val prefs: SharedPreferences) {
     fun suggest(contextBeforeCursor: String, russian: Boolean, limit: Int = 3): List<WordCandidate> {
         val raw = extractCurrentWord(contextBeforeCursor)
         if (raw.length < 2 || isTechnicalContext(contextBeforeCursor, raw)) return emptyList()
+        // A correctly typed dictionary/personal word must not receive fuzzy "corrections".
+        // This prevents valid words such as "потом" -> "потому" or "меня" -> another nearby word.
+        if (isKnownWord(raw, russian)) return emptyList()
         val query = raw.lowercase(Locale.ROOT)
         if (!query.all { it.isLetterOrDigit() }) return emptyList()
 
