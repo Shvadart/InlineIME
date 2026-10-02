@@ -66,14 +66,18 @@ class RussianBloomDictionary(context: Context) {
             }
         }
 
-        if (found.size >= limit) return found.take(limit)
-
+        // Do not stop just because many distance-1 dictionary words were found.
+        // The intended correction may require two typing edits and would otherwise
+        // never even be considered.
         for (variant in cheapVariants(source).take(MAX_SECOND_LEVEL_BASES)) {
             for (candidate in cheapVariants(variant).take(MAX_SECOND_LEVEL_PER_BASE)) {
                 accept(candidate)
-                if (found.size >= limit) return found.toList()
             }
         }
+
+        // Ranking is done by AdaptiveWordSuggester using keyboard-aware distance.
+        // Return a broad bounded pool so common but later-generated corrections
+        // are not hidden behind arbitrary dictionary iteration order.
         return found.take(limit)
     }
 
@@ -121,8 +125,8 @@ class RussianBloomDictionary(context: Context) {
     private companion object {
         const val ASSET = "dictionaries/ru_words.bloom"
         const val HASHES = 10
-        const val MAX_SECOND_LEVEL_BASES = 96
-        const val MAX_SECOND_LEVEL_PER_BASE = 96
+        const val MAX_SECOND_LEVEL_BASES = 192
+        const val MAX_SECOND_LEVEL_PER_BASE = 192
         const val RUSSIAN_ALPHABET = "абвгдеёжзийклмнопрстуфхцчшщъыьэюя"
         val RU_ROWS = arrayOf("йцукенгшщзхъ", "фывапролджэ", "ячсмитьбю")
     }
