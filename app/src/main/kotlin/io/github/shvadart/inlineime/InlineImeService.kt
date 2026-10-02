@@ -460,7 +460,7 @@ class InlineImeService : InputMethodService() {
         row.addView(bottomKey("↵") {
             rememberEditorState()
             currentInputConnection?.commitText("\n", 1)
-            enableAutoShift()
+            syncAutoShiftFromCursor()
             refreshSuggestion()
         }, weightedKeyParams(1.2f, dp(56)))
 
@@ -746,7 +746,7 @@ class InlineImeService : InputMethodService() {
     private fun commitTextKey(text: String) {
         rememberEditorState()
         currentInputConnection?.commitText(text, 1)
-        if (text == "\n" || text == "." || text == "!" || text == "?") enableAutoShift()
+        syncAutoShiftFromCursor()
         refreshSuggestion()
     }
 
@@ -763,19 +763,15 @@ class InlineImeService : InputMethodService() {
     private fun shouldAutoShift(before: String): Boolean {
         if (before.isEmpty() || before.lastOrNull() == '\n') return true
 
-        val trimmed = before.trimEnd()
-        val last = trimmed.lastOrNull() ?: return true
-        if (last !in setOf('.', '!', '?')) return false
-
-        // A punctuation mark directly inside a token is usually a domain, e-mail, URL,
-        // filename, version number, etc. Examples: mail.ru, gmail.com, foo.bar.
-        if (before.lastOrNull() == last) {
-            val previous = before.dropLast(1).lastOrNull()
-            if (previous != null && (previous.isLetterOrDigit() || previous in setOf('@', '_', '-', '/', ':'))) {
-                return false
-            }
+        // Sentence capitalization starts only after punctuation followed by whitespace.
+        // While punctuation is still attached to the previous token we keep lowercase so
+        // domains/e-mails/URLs such as mail.ru and gmail.com don't become mail.Ru/gmail.Com.
+        if (before.lastOrNull()?.isWhitespace() == true) {
+            val trimmed = before.trimEnd()
+            return trimmed.lastOrNull() in setOf('.', '!', '?')
         }
-        return true
+
+        return false
     }
 
     private fun enableAutoShift() {
