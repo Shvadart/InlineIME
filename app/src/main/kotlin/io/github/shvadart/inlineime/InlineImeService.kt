@@ -57,6 +57,7 @@ class InlineImeService : InputMethodService() {
     private var deleteRepeatRunnable: Runnable? = null
     private var deleteClearPopup: PopupWindow? = null
     private var deleteClearTargeted = false
+    private var deleteWordHistoryCaptured = false
 
     private var activeSuggestion: Suggestion? = null
     private val clipboardEntries = mutableListOf<ClipboardEntry>()
@@ -115,6 +116,8 @@ class InlineImeService : InputMethodService() {
 
     override fun onStartInputView(info: android.view.inputmethod.EditorInfo?, restarting: Boolean) {
         super.onStartInputView(info, restarting)
+        undoStack.clear()
+        redoStack.clear()
         loadClipboardHistory()
         startClipboardHistory()
         captureClipboard()
@@ -556,6 +559,7 @@ class InlineImeService : InputMethodService() {
                             rememberEditorState()
                             deleteHoldStartedAt = SystemClock.uptimeMillis()
                             deleteClearTargeted = false
+                            deleteWordHistoryCaptured = false
                             startDeleteRepeat(view)
                             true
                         }
@@ -601,6 +605,7 @@ class InlineImeService : InputMethodService() {
 
     private fun deleteOne(refresh: Boolean = true) {
         val ic = currentInputConnection ?: return
+        if (refresh) rememberEditorState()
         val selected = ic.getSelectedText(0)
         if (!selected.isNullOrEmpty()) {
             ic.commitText("", 1)
@@ -625,8 +630,15 @@ class InlineImeService : InputMethodService() {
                     showDeleteClearPopup(anchor)
                 }
                 if (!deleteClearTargeted && elapsed >= DELETE_REPEAT_START_MS) {
-                    if (elapsed >= DELETE_WORD_MODE_MS) deleteWordBeforeCursor(refresh = false)
-                    else deleteOne(refresh = false)
+                    if (elapsed >= DELETE_WORD_MODE_MS) {
+                        if (!deleteWordHistoryCaptured) {
+                            rememberEditorState()
+                            deleteWordHistoryCaptured = true
+                        }
+                        deleteWordBeforeCursor(refresh = false)
+                    } else {
+                        deleteOne(refresh = false)
+                    }
                 }
                 val delay = when {
                     elapsed >= DELETE_WORD_MODE_MS -> DELETE_WORD_INTERVAL_MS
@@ -863,20 +875,23 @@ class InlineImeService : InputMethodService() {
 
     private fun performEditorHistory(undo: Boolean) {
         val ic = currentInputConnection ?: return
-        val nativeAction = if (undo) android.R.id.undo else android.R.id.redo
-        if (ic.performContextMenuAction(nativeAction)) {
-            syncAutoShiftFromCursor()
-            refreshSuggestion()
+        val current = currentEditorSnapshot()
+        val source = if (undo) undoStack else redoStack
+        val destination = if (undo) redoStack else undoStack
+
+        if (current != null && source.isNotEmpty()) {
+            val target = source.removeLast()
+            destination.addLast(current)
+            restoreEditorSnapshot(target)
             return
         }
 
-        val current = currentEditorSnapshot() ?: return
-        val source = if (undo) undoStack else redoStack
-        val destination = if (undo) redoStack else undoStack
-        if (source.isEmpty()) return
-        val target = source.removeLast()
-        destination.addLast(current)
-        restoreEditorSnapshot(target)
+        // Best-effort fallback for edits that happened outside InlineIME. Some Android editors
+        // don't expose undo/redo through InputConnection at all, so this is intentionally second.
+        val nativeAction = if (undo) android.R.id.undo else android.R.id.redo
+        ic.performContextMenuAction(nativeAction)
+        syncAutoShiftFromCursor()
+        refreshSuggestion()
     }
 
     private fun sendNavigation(keyCode: Int, useSelectionMeta: Boolean = true) {
