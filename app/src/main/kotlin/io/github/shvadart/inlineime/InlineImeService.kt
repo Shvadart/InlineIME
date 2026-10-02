@@ -136,7 +136,7 @@ class InlineImeService : InputMethodService() {
             )
         }
 
-        add("|←") { sendNavigation(KeyEvent.KEYCODE_MOVE_HOME) }
+        add("|←") { moveToBoundary(toEnd = false) }
         add("▣") { performContextAction(android.R.id.selectAll) }
         add("↑") { sendNavigation(KeyEvent.KEYCODE_DPAD_UP) }
         add("←") { sendNavigation(KeyEvent.KEYCODE_DPAD_LEFT) }
@@ -153,7 +153,7 @@ class InlineImeService : InputMethodService() {
         add("↓") { sendNavigation(KeyEvent.KEYCODE_DPAD_DOWN) }
         add("⧉") { performContextAction(android.R.id.copy) }
         add("▤") { pasteFast() }
-        add("→|") { sendNavigation(KeyEvent.KEYCODE_MOVE_END) }
+        add("→|") { moveToBoundary(toEnd = true) }
 
         return row
     }
@@ -545,14 +545,22 @@ class InlineImeService : InputMethodService() {
     private fun sendNavigation(keyCode: Int, useSelectionMeta: Boolean = true) {
         val ic = currentInputConnection ?: return
         if (selectionMode && useSelectionMeta &&
-            (keyCode == KeyEvent.KEYCODE_DPAD_LEFT || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT)
+            keyCode in setOf(
+                KeyEvent.KEYCODE_DPAD_LEFT,
+                KeyEvent.KEYCODE_DPAD_RIGHT,
+                KeyEvent.KEYCODE_DPAD_UP,
+                KeyEvent.KEYCODE_DPAD_DOWN,
+            )
         ) {
-            val extracted = ic.getExtractedText(android.view.inputmethod.ExtractedTextRequest(), 0) ?: return
+            val extracted = ic.getExtractedText(ExtractedTextRequest(), 0) ?: return
+            val text = extracted.text?.toString().orEmpty()
             val anchor = selectionAnchor ?: extracted.selectionStart.also { selectionAnchor = it }
             val active = if (extracted.selectionStart == anchor) extracted.selectionEnd else extracted.selectionStart
             val next = when (keyCode) {
                 KeyEvent.KEYCODE_DPAD_LEFT -> (active - 1).coerceAtLeast(0)
-                else -> (active + 1).coerceAtMost(extracted.text.length)
+                KeyEvent.KEYCODE_DPAD_RIGHT -> (active + 1).coerceAtMost(text.length)
+                KeyEvent.KEYCODE_DPAD_UP -> verticalSelectionTarget(text, active, -1)
+                else -> verticalSelectionTarget(text, active, 1)
             }
             ic.setSelection(minOf(anchor, next), maxOf(anchor, next))
         } else {
@@ -561,6 +569,44 @@ class InlineImeService : InputMethodService() {
             ic.sendKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_UP, keyCode, 0, 0))
         }
         refreshSuggestion()
+    }
+
+    private fun moveToBoundary(toEnd: Boolean) {
+        val ic = currentInputConnection ?: return
+        val extracted = ic.getExtractedText(ExtractedTextRequest(), 0) ?: return
+        val textLength = extracted.text?.length ?: 0
+        val target = if (toEnd) textLength else 0
+
+        if (selectionMode) {
+            val anchor = selectionAnchor ?: extracted.selectionStart.also { selectionAnchor = it }
+            ic.setSelection(minOf(anchor, target), maxOf(anchor, target))
+        } else {
+            ic.setSelection(target, target)
+        }
+        refreshSuggestion()
+    }
+
+    private fun verticalSelectionTarget(text: String, position: Int, direction: Int): Int {
+        val pos = position.coerceIn(0, text.length)
+        val lineStart = text.lastIndexOf('\n', (pos - 1).coerceAtLeast(0))
+            .let { if (it < 0) 0 else it + 1 }
+        val column = pos - lineStart
+
+        return if (direction < 0) {
+            if (lineStart == 0) 0 else {
+                val previousEnd = lineStart - 1
+                val previousStart = text.lastIndexOf('\n', (previousEnd - 1).coerceAtLeast(0))
+                    .let { if (it < 0) 0 else it + 1 }
+                previousStart + column.coerceAtMost(previousEnd - previousStart)
+            }
+        } else {
+            val lineEnd = text.indexOf('\n', pos).let { if (it < 0) text.length else it }
+            if (lineEnd >= text.length) text.length else {
+                val nextStart = lineEnd + 1
+                val nextEnd = text.indexOf('\n', nextStart).let { if (it < 0) text.length else it }
+                nextStart + column.coerceAtMost(nextEnd - nextStart)
+            }
+        }
     }
 
     private fun keyView(label: String): TextView = TextView(this).apply {
