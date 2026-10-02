@@ -869,9 +869,19 @@ class InlineImeService : InputMethodService() {
             return
         }
 
-        val candidates = wordSuggester
-            .suggest(beforeCursor, russian = language == Language.RU, limit = 3)
-            .map { it.word }
+        val splitCandidate = wordSuggester.splitRunTogetherWord(
+            beforeCursor,
+            russian = language == Language.RU,
+        )
+        val candidates = buildList {
+            if (splitCandidate != null) add(splitCandidate)
+            addAll(
+                wordSuggester
+                    .suggest(beforeCursor, russian = language == Language.RU, limit = 3)
+                    .map { it.word }
+                    .filter { it != splitCandidate },
+            )
+        }.take(3)
 
         if (candidates.isEmpty()) {
             suggestionRow.visibility = View.VISIBLE
