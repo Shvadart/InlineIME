@@ -18,6 +18,9 @@ import android.view.WindowInsets
 import android.view.inputmethod.InputConnection
 import android.view.inputmethod.EditorInfo
 import android.text.InputType
+import android.text.Spannable
+import android.text.SpannableString
+import android.text.style.ForegroundColorSpan
 import android.view.inputmethod.ExtractedTextRequest
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
@@ -66,6 +69,7 @@ class InlineImeService : InputMethodService() {
     private var aiDebounceRunnable: Runnable? = null
     private var aiCompletion: String? = null
     private var aiCompletionContext: String? = null
+    private var aiGhostText: String? = null
     private val aiPrefs by lazy { getSharedPreferences("ai_completion", MODE_PRIVATE) }
     private val aiClient by lazy {
         AiCompletionClient { aiPrefs.getString(KEY_AI_ENDPOINT, "").orEmpty() }
@@ -191,7 +195,7 @@ class InlineImeService : InputMethodService() {
             candidatesStart,
             candidatesEnd,
         )
-        refreshSuggestion()
+        if (aiGhostText == null) refreshSuggestion()
     }
 
     private fun buildEditingToolbar(): View {
@@ -472,15 +476,21 @@ class InlineImeService : InputMethodService() {
             commitTextKey(" ")
         }.apply {
             var downX = 0f
+            var spaceDownY = 0f
             setOnTouchListener { _, event ->
                 when (event.actionMasked) {
                     MotionEvent.ACTION_DOWN -> {
                         downX = event.x
+                        spaceDownY = event.y
                         false
                     }
                     MotionEvent.ACTION_UP -> {
                         val dx = event.x - downX
-                        if (kotlin.math.abs(dx) >= dp(48)) {
+                        val dy = event.y - spaceDownY
+                        if (dy <= -dp(40) && acceptAiGhost()) {
+                            performHapticFeedback(android.view.HapticFeedbackConstants.KEYBOARD_TAP)
+                            true
+                        } else if (kotlin.math.abs(dx) >= dp(48)) {
                             language = if (language == Language.RU) Language.EN else Language.RU
                             languageButton.text = if (language == Language.RU) "RU" else "EN"
                             text = if (language == Language.RU) "Русский" else "English"
@@ -660,6 +670,15 @@ class InlineImeService : InputMethodService() {
 
     private fun deleteOne(refresh: Boolean = true) {
         val ic = currentInputConnection ?: return
+        if (aiGhostText != null) {
+            ic.setComposingText("", 1)
+            aiGhostText = null
+            aiCompletion = null
+            aiCompletionContext = null
+            aiRequestGeneration.incrementAndGet()
+            if (refresh) refreshSuggestion()
+            return
+        }
 
         if (refresh && restoreLastAutoCorrectionWithBackspace(ic)) {
             syncAutoShiftFromCursor()
@@ -816,6 +835,9 @@ class InlineImeService : InputMethodService() {
 
     private fun commitLetter(text: String) {
         rememberEditorState()
+        // commitText replaces an active composing ghost, so the user's own
+        // keystroke always wins immediately.
+        aiGhostText = null
         currentInputConnection?.commitText(text, 1)
         if (!capsLock) {
             val before = currentInputConnection?.getTextBeforeCursor(512, 0)?.toString().orEmpty()
@@ -830,6 +852,8 @@ class InlineImeService : InputMethodService() {
 
     private fun commitTextKey(text: String) {
         val ic = currentInputConnection ?: return
+        // Normal typing replaces, rather than accidentally accepting, ghost text.
+        aiGhostText = null
         val before = ic.getTextBeforeCursor(256, 0)?.toString().orEmpty()
         val commitsWord = text.any { it.isWhitespace() || it in ".,!?;:" }
 
@@ -970,7 +994,7 @@ class InlineImeService : InputMethodService() {
                     if (!current.endsWith(context)) return@post
                     aiCompletion = completion
                     aiCompletionContext = if (completion != null) context else null
-                    if (completion != null) refreshSuggestion()
+                    if (completion != null && !showAiGhost(completion)) refreshSuggestion()
                 }
             }
         }
@@ -978,10 +1002,48 @@ class InlineImeService : InputMethodService() {
         aiHandler.postDelayed(runnable, AI_DEBOUNCE_MS)
     }
 
+    private fun showAiGhost(completion: String): Boolean {
+        val ic = currentInputConnection ?: return false
+        val styled = SpannableString(completion).apply {
+            setSpan(
+                ForegroundColorSpan(COLOR_GHOST_TEXT),
+                0,
+                length,
+                Spannable.SPAN_EXCLUSIVE_EXCLUSIVE,
+            )
+        }
+        val shown = ic.setComposingText(styled, 1)
+        if (shown) {
+            aiGhostText = completion
+            suggestionButtons.forEach {
+                it.text = ""
+                it.visibility = View.INVISIBLE
+                it.setOnClickListener(null)
+                it.setOnLongClickListener(null)
+            }
+        }
+        return shown
+    }
+
+    private fun acceptAiGhost(): Boolean {
+        if (aiGhostText == null) return false
+        val ic = currentInputConnection ?: return false
+        rememberEditorState()
+        ic.finishComposingText()
+        aiGhostText = null
+        aiRequestGeneration.incrementAndGet()
+        aiCompletion = null
+        aiCompletionContext = null
+        syncAutoShiftFromCursor()
+        refreshSuggestion()
+        return true
+    }
+
     private fun applyAiCompletion(completion: String) {
         rememberEditorState()
         currentInputConnection?.commitText(completion, 1)
         aiRequestGeneration.incrementAndGet()
+        aiGhostText = null
         aiCompletion = null
         aiCompletionContext = null
         syncAutoShiftFromCursor()
@@ -1413,5 +1475,6 @@ class InlineImeService : InputMethodService() {
         const val COLOR_KEY_TEXT = 0xFFF1F1F5.toInt()
         const val COLOR_TOOLBAR_TEXT = 0xFFE7E7ED.toInt()
         const val COLOR_ACTIVE = 0xFF5C6BC0.toInt()
+        const val COLOR_GHOST_TEXT = 0xFF8A8C94.toInt()
     }
 }
