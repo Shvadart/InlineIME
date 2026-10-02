@@ -227,7 +227,7 @@ class InlineImeService : InputMethodService() {
         lettersContainer.removeAllViews()
 
         if (symbols) {
-            listOf("!@#%&*+-=", "()[]{}<>", "\\/:;\"'€£¥").forEach { chars ->
+            listOf("!?@#%&*+-=", "()[]{}<>", "\\/:;\"'€£¥").forEach { chars ->
                 lettersContainer.addView(buildEqualRow(chars.map { it.toString() }, ::commitTextKey, dp(56)))
             }
             return
