@@ -29,6 +29,7 @@ import io.github.shvadart.inlineime.suggestion.SuggestionProvider
 class InlineImeService : InputMethodService() {
     private enum class Language { RU, EN }
     private data class ClipboardEntry(val text: String, val pinned: Boolean)
+    private data class EditorSnapshot(val text: String, val selectionStart: Int, val selectionEnd: Int)
 
     private var language = Language.RU
     private var shift = true
@@ -57,6 +58,9 @@ class InlineImeService : InputMethodService() {
     private val clipboardListener = ClipboardManager.OnPrimaryClipChangedListener { captureClipboard() }
     private var clipboardListening = false
     private var clipboardHistoryVisible = false
+    private val undoStack = ArrayDeque<EditorSnapshot>()
+    private val redoStack = ArrayDeque<EditorSnapshot>()
+    private var restoringEditorHistory = false
     private val clipboardPrefs by lazy { getSharedPreferences("clipboard_history", MODE_PRIVATE) }
 
     private val suggestionProviders: List<SuggestionProvider> = listOf(
@@ -256,7 +260,7 @@ class InlineImeService : InputMethodService() {
             background = insetKeyBackground(COLOR_KEY)
         }
         val preview = TextView(this).apply {
-            text = entry.text.replace("\n", " ").take(CLIPBOARD_PREVIEW_LENGTH)
+            text = clipboardPreview(entry.text)
             maxLines = 2
             textSize = 15f
             setTextColor(COLOR_KEY_TEXT)
@@ -300,12 +304,31 @@ class InlineImeService : InputMethodService() {
         clipboardListening = false
     }
 
+    private fun clipboardPreview(text: String): String {
+        val compact = text.replace("\r", "").replace("\n", " ↵ ")
+        if (compact.length <= CLIPBOARD_PREVIEW_LENGTH) return compact
+        return compact.take(CLIPBOARD_PREVIEW_LENGTH) + "…  [${text.length} симв.]"
+    }
+
     private fun captureClipboard(refreshUi: Boolean = true) {
         val clipboard = getSystemService(ClipboardManager::class.java)
         val clip = clipboard.primaryClip ?: return
         if (clip.itemCount == 0 || isSensitiveClipboard(clip.description)) return
         val value = clip.getItemAt(0).coerceToText(this)?.toString()?.trimEnd() ?: return
         if (value.isBlank()) return
+
+        if (value.length > CLIPBOARD_HISTORY_ENTRY_LIMIT) {
+            // The system clipboard can still paste the complete value. Keep a bounded
+            // history copy so a very large clipboard item cannot freeze the IME.
+            val bounded = value.take(CLIPBOARD_HISTORY_ENTRY_LIMIT)
+            val existing = clipboardEntries.firstOrNull { it.text == bounded }
+            clipboardEntries.removeAll { it.text == bounded }
+            clipboardEntries.add(0, ClipboardEntry(bounded, existing?.pinned == true))
+            trimClipboardHistory()
+            saveClipboardHistory()
+            if (refreshUi && clipboardHistoryVisible) showClipboardHistory()
+            return
+        }
 
         val existing = clipboardEntries.firstOrNull { it.text == value }
         clipboardEntries.removeAll { it.text == value }
@@ -412,6 +435,7 @@ class InlineImeService : InputMethodService() {
         }, weightedKeyParams(0.8f, dp(56)))
 
         row.addView(bottomKey("↵") {
+            rememberEditorState()
             currentInputConnection?.commitText("\n", 1)
             enableAutoShift()
             refreshSuggestion()
@@ -552,7 +576,9 @@ class InlineImeService : InputMethodService() {
     }
 
     private fun deleteOne() {
+        rememberEditorState()
         currentInputConnection?.deleteSurroundingText(1, 0)
+        syncAutoShiftFromCursor()
         refreshSuggestion()
     }
 
@@ -596,7 +622,9 @@ class InlineImeService : InputMethodService() {
                 .indexOfLast { it.isWhitespace() } + 1
             before.length - wordStart
         }
+        rememberEditorState()
         ic.deleteSurroundingText(count.coerceAtLeast(1), 0)
+        syncAutoShiftFromCursor()
         refreshSuggestion()
     }
 
@@ -651,6 +679,7 @@ class InlineImeService : InputMethodService() {
     }
 
     private fun commitLetter(text: String) {
+        rememberEditorState()
         currentInputConnection?.commitText(text, 1)
         if (shift && !capsLock) {
             shift = false
@@ -660,9 +689,21 @@ class InlineImeService : InputMethodService() {
     }
 
     private fun commitTextKey(text: String) {
+        rememberEditorState()
         currentInputConnection?.commitText(text, 1)
         if (text == "\n" || text == "." || text == "!" || text == "?") enableAutoShift()
         refreshSuggestion()
+    }
+
+    private fun syncAutoShiftFromCursor() {
+        if (capsLock) return
+        val before = currentInputConnection?.getTextBeforeCursor(512, 0)?.toString().orEmpty()
+        val shouldShift = before.isEmpty() || before.lastOrNull() == '\n' ||
+            before.trimEnd().lastOrNull() in setOf('.', '!', '?')
+        if (shift != shouldShift) {
+            shift = shouldShift
+            renderLetterRows()
+        }
     }
 
     private fun enableAutoShift() {
@@ -677,6 +718,7 @@ class InlineImeService : InputMethodService() {
 
     private fun clearAllText() {
         val ic = currentInputConnection ?: return
+        rememberEditorState()
         val extracted = ic.getExtractedText(ExtractedTextRequest(), 0)
         if (extracted != null) {
             val length = extracted.text?.length ?: 0
@@ -724,6 +766,7 @@ class InlineImeService : InputMethodService() {
 
     private fun pasteText(text: String) {
         val ic = currentInputConnection ?: return
+        rememberEditorState()
         ic.beginBatchEdit()
         try {
             text.chunked(PASTE_CHUNK_SIZE).forEach { chunk -> ic.commitText(chunk, 1) }
@@ -738,24 +781,54 @@ class InlineImeService : InputMethodService() {
         refreshSuggestion()
     }
 
-    private fun performEditorHistory(undo: Boolean) {
-        val ic = currentInputConnection ?: return
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            val action = if (undo) android.R.id.undo else android.R.id.redo
-            if (ic.performContextMenuAction(action)) {
-                refreshSuggestion()
-                return
-            }
+    private fun rememberEditorState() {
+        if (restoringEditorHistory) return
+        val snapshot = currentEditorSnapshot() ?: return
+        if (undoStack.lastOrNull() != snapshot) {
+            undoStack.addLast(snapshot)
+            while (undoStack.size > EDITOR_HISTORY_LIMIT) undoStack.removeFirst()
         }
+        redoStack.clear()
+    }
 
-        // Fallback for editors that expose Ctrl+Z / Ctrl+Y but not Android's
-        // context-menu undo/redo actions.
-        val keyCode = if (undo) KeyEvent.KEYCODE_Z else KeyEvent.KEYCODE_Y
-        val now = SystemClock.uptimeMillis()
-        val meta = KeyEvent.META_CTRL_ON
-        ic.sendKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_DOWN, keyCode, 0, meta))
-        ic.sendKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_UP, keyCode, 0, meta))
+    private fun currentEditorSnapshot(): EditorSnapshot? {
+        val extracted = currentInputConnection
+            ?.getExtractedText(ExtractedTextRequest(), 0) ?: return null
+        val text = extracted.text?.toString() ?: return null
+        if (text.length > EDITOR_HISTORY_TEXT_LIMIT) return null
+        return EditorSnapshot(text, extracted.selectionStart, extracted.selectionEnd)
+    }
+
+    private fun restoreEditorSnapshot(snapshot: EditorSnapshot) {
+        val ic = currentInputConnection ?: return
+        restoringEditorHistory = true
+        try {
+            val current = ic.getExtractedText(ExtractedTextRequest(), 0)
+            val length = current?.text?.length ?: 0
+            ic.beginBatchEdit()
+            ic.setSelection(0, length)
+            ic.commitText(snapshot.text, 1)
+            val max = snapshot.text.length
+            ic.setSelection(
+                snapshot.selectionStart.coerceIn(0, max),
+                snapshot.selectionEnd.coerceIn(0, max),
+            )
+            ic.endBatchEdit()
+        } finally {
+            restoringEditorHistory = false
+        }
+        syncAutoShiftFromCursor()
         refreshSuggestion()
+    }
+
+    private fun performEditorHistory(undo: Boolean) {
+        val current = currentEditorSnapshot() ?: return
+        val source = if (undo) undoStack else redoStack
+        val destination = if (undo) redoStack else undoStack
+        if (source.isEmpty()) return
+        val target = source.removeLast()
+        destination.addLast(current)
+        restoreEditorSnapshot(target)
     }
 
     private fun sendNavigation(keyCode: Int, useSelectionMeta: Boolean = true) {
@@ -901,6 +974,9 @@ class InlineImeService : InputMethodService() {
         const val PASTE_CHUNK_SIZE = 8 * 1024
         const val CLIPBOARD_HISTORY_LIMIT = 50
         const val CLIPBOARD_PREVIEW_LENGTH = 120
+        const val CLIPBOARD_HISTORY_ENTRY_LIMIT = 256 * 1024
+        const val EDITOR_HISTORY_LIMIT = 40
+        const val EDITOR_HISTORY_TEXT_LIMIT = 100 * 1024
         const val DOUBLE_TAP_MS = 500L
         const val DELETE_REPEAT_START_MS = 350L
         const val DELETE_CLEAR_POPUP_MS = 450L
