@@ -13,8 +13,8 @@ import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowInsets
-import android.widget.PopupWindow
 import android.view.inputmethod.InputConnection
+import android.view.inputmethod.ExtractedTextRequest
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -40,8 +40,9 @@ class InlineImeService : InputMethodService() {
     private lateinit var shiftButton: TextView
     private lateinit var spaceButton: TextView
 
-    private val repeatHandler = Handler(Looper.getMainLooper())
-    private var deleteRepeater: Runnable? = null
+    private val gestureHandler = Handler(Looper.getMainLooper())
+    private var clearDeleteArmed = false
+    private var clearDeleteRunnable: Runnable? = null
 
     private var activeSuggestion: Suggestion? = null
 
@@ -231,7 +232,7 @@ class InlineImeService : InputMethodService() {
 
         val rows = when (language) {
             Language.RU -> listOf(
-                "ёйцукенгшщзх",
+                "йцукенгшщзх",
                 "фывапролджэ",
             )
             Language.EN -> listOf(
@@ -246,9 +247,17 @@ class InlineImeService : InputMethodService() {
                 c.toString()
             }
             val sideInset = if (index == 1) dp(14) else 0
-            lettersContainer.addView(
-                buildEqualRow(labels, ::commitLetter, dp(56), sideInset),
-            )
+            val row = buildEqualRow(labels, ::commitLetter, dp(56), sideInset) as LinearLayout
+            if (language == Language.RU && index == 0) {
+                val eIndex = chars.indexOf('е')
+                if (eIndex >= 0) {
+                    row.getChildAt(eIndex)?.setOnLongClickListener {
+                        commitLetter(if (shift) "Ё" else "ё")
+                        true
+                    }
+                }
+            }
+            lettersContainer.addView(row)
         }
 
         lettersContainer.addView(buildThirdLetterRow())
@@ -296,12 +305,35 @@ class InlineImeService : InputMethodService() {
 
         row.addView(
             specialKey("⌫").apply {
-                setOnClickListener {
-                    deleteOne()
-                }
-                setOnLongClickListener {
-                    showClearPopup(this)
-                    true
+                setOnTouchListener { view, event ->
+                    when (event.actionMasked) {
+                        MotionEvent.ACTION_DOWN -> {
+                            clearDeleteArmed = false
+                            clearDeleteRunnable?.let(gestureHandler::removeCallbacks)
+                            clearDeleteRunnable = Runnable {
+                                clearDeleteArmed = true
+                                (view as TextView).text = "✕"
+                            }.also { gestureHandler.postDelayed(it, CLEAR_DELETE_HOLD_MS) }
+                            true
+                        }
+                        MotionEvent.ACTION_UP -> {
+                            clearDeleteRunnable?.let(gestureHandler::removeCallbacks)
+                            clearDeleteRunnable = null
+                            if (clearDeleteArmed) clearAllText() else deleteOne()
+                            clearDeleteArmed = false
+                            (view as TextView).text = "⌫"
+                            view.performClick()
+                            true
+                        }
+                        MotionEvent.ACTION_CANCEL -> {
+                            clearDeleteRunnable?.let(gestureHandler::removeCallbacks)
+                            clearDeleteRunnable = null
+                            clearDeleteArmed = false
+                            (view as TextView).text = "⌫"
+                            true
+                        }
+                        else -> true
+                    }
                 }
             },
             weightedKeyParams(1.25f, dp(56)),
@@ -313,11 +345,6 @@ class InlineImeService : InputMethodService() {
     private fun deleteOne() {
         currentInputConnection?.deleteSurroundingText(1, 0)
         refreshSuggestion()
-    }
-
-    private fun stopDeleteRepeat() {
-        deleteRepeater?.let(repeatHandler::removeCallbacks)
-        deleteRepeater = null
     }
 
     private fun buildEqualRow(
@@ -366,30 +393,19 @@ class InlineImeService : InputMethodService() {
     private fun buildNumberRow(): View =
         buildEqualRow("1234567890".map { it.toString() }, ::commitTextKey, dp(48))
 
-    private fun showClearPopup(anchor: View) {
-        val clear = specialKey("✕").apply {
-            textSize = 24f
-            setOnClickListener {
-                clearAllText()
-                (parent as? View)?.let { }
-            }
-        }
-        val popup = PopupWindow(clear, dp(54), dp(54), false).apply {
-            isTouchable = true
-            isOutsideTouchable = true
-            elevation = dp(8).toFloat()
-        }
-        clear.setOnClickListener {
-            clearAllText()
-            popup.dismiss()
-        }
-        popup.showAsDropDown(anchor, 0, -dp(112))
-    }
-
     private fun clearAllText() {
         val ic = currentInputConnection ?: return
-        ic.performContextMenuAction(android.R.id.selectAll)
-        ic.commitText("", 1)
+        val extracted = ic.getExtractedText(ExtractedTextRequest(), 0)
+        if (extracted != null) {
+            val length = extracted.text?.length ?: 0
+            if (length > 0) {
+                ic.setSelection(0, length)
+                ic.commitText("", 1)
+            }
+        } else {
+            ic.performContextMenuAction(android.R.id.selectAll)
+            ic.commitText("", 1)
+        }
         enableAutoShift()
         refreshSuggestion()
     }
@@ -560,8 +576,7 @@ class InlineImeService : InputMethodService() {
     private companion object {
         const val PASTE_CHUNK_SIZE = 8 * 1024
         const val DOUBLE_TAP_MS = 500L
-        const val DELETE_HOLD_DELAY_MS = 350L
-        const val DELETE_REPEAT_MS = 55L
+        const val CLEAR_DELETE_HOLD_MS = 650L
 
         const val COLOR_BACKGROUND = 0xFF1B1C21.toInt()
         const val COLOR_KEY = 0xFF2B2C31.toInt()
