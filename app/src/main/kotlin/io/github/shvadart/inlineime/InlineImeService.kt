@@ -925,8 +925,13 @@ class InlineImeService : InputMethodService() {
             russian = language == Language.RU,
         )
         val personalSuggestions = wordSuggester.personalSuggestions(beforeCursor, limit = 3)
+        val personalCandidate = wordSuggester.personalEntryCandidate(beforeCursor)
         val candidates = buildList {
             addAll(personalSuggestions)
+            // Keep the literal token visible as an explicit "keep/add" choice.
+            // This is especially important for surnames, patronymics, e-mails and
+            // other valid text that intentionally is not in the bundled dictionary.
+            if (personalCandidate != null && personalCandidate !in this) add(personalCandidate)
             if (splitCandidate != null && splitCandidate !in this) add(splitCandidate)
             addAll(
                 wordSuggester
@@ -937,7 +942,6 @@ class InlineImeService : InputMethodService() {
         }.take(3)
 
         if (candidates.isEmpty()) {
-            val personalCandidate = wordSuggester.personalEntryCandidate(beforeCursor)
             if (personalCandidate != null) {
                 showPersonalEntryCandidate(personalCandidate)
             } else {
@@ -959,6 +963,14 @@ class InlineImeService : InputMethodService() {
             } else {
                 applyWordSuggestion(beforeCursor, choice)
             }
+        }
+        if (personalCandidate != null) {
+            suggestionButtons.firstOrNull { it.visibility == View.VISIBLE && it.text.toString() == personalCandidate }
+                ?.setOnLongClickListener {
+                    wordSuggester.addPersonalEntry(personalCandidate)
+                    it.text = "✓ $personalCandidate"
+                    true
+                }
         }
     }
 
