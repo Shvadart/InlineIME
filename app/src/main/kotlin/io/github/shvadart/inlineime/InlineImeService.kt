@@ -60,6 +60,12 @@ class InlineImeService : InputMethodService() {
     private var deleteClearPopup: PopupWindow? = null
     private var deleteClearTargeted = false
     private var deleteWordHistoryCaptured = false
+    private data class AutoCorrectionUndo(
+        val correctedWord: String,
+        val originalWord: String,
+        val separator: String,
+    )
+    private var pendingAutoCorrectionUndo: AutoCorrectionUndo? = null
 
     private var activeSuggestion: Suggestion? = null
     private val clipboardEntries = mutableListOf<ClipboardEntry>()
@@ -632,20 +638,50 @@ class InlineImeService : InputMethodService() {
 
     private fun deleteOne(refresh: Boolean = true) {
         val ic = currentInputConnection ?: return
+
+        if (refresh && restoreLastAutoCorrectionWithBackspace(ic)) {
+            syncAutoShiftFromCursor()
+            refreshSuggestion()
+            return
+        }
+
         if (refresh) rememberEditorState()
         val selected = ic.getSelectedText(0)
         if (!selected.isNullOrEmpty()) {
+            pendingAutoCorrectionUndo = null
             ic.commitText("", 1)
             selectionMode = false
             selectionAnchor = null
             updateSelectionButton()
         } else {
+            pendingAutoCorrectionUndo = null
             ic.deleteSurroundingText(1, 0)
         }
         if (refresh) {
             syncAutoShiftFromCursor()
             refreshSuggestion()
         }
+    }
+
+    private fun restoreLastAutoCorrectionWithBackspace(ic: InputConnection): Boolean {
+        val correction = pendingAutoCorrectionUndo ?: return false
+        val expected = correction.correctedWord + correction.separator
+        val before = ic.getTextBeforeCursor(expected.length + 4, 0)?.toString().orEmpty()
+        if (!before.endsWith(expected)) {
+            pendingAutoCorrectionUndo = null
+            return false
+        }
+
+        rememberEditorState()
+        ic.beginBatchEdit()
+        try {
+            ic.deleteSurroundingText(expected.length, 0)
+            ic.commitText(correction.originalWord + correction.separator, 1)
+        } finally {
+            ic.endBatchEdit()
+        }
+        pendingAutoCorrectionUndo = null
+        return true
     }
 
     private fun startDeleteRepeat(anchor: View) {
@@ -788,6 +824,11 @@ class InlineImeService : InputMethodService() {
                 } finally {
                     ic.endBatchEdit()
                 }
+                pendingAutoCorrectionUndo = AutoCorrectionUndo(
+                    correctedWord = correction.word,
+                    originalWord = typedWord,
+                    separator = text,
+                )
                 wordSuggester.observeCommittedWord(correction.word)
                 syncAutoShiftFromCursor()
                 refreshSuggestion()
@@ -796,6 +837,7 @@ class InlineImeService : InputMethodService() {
             wordSuggester.observeCommittedWord(typedWord)
         }
 
+        pendingAutoCorrectionUndo = null
         rememberEditorState()
         ic.commitText(text, 1)
         syncAutoShiftFromCursor()
