@@ -16,6 +16,8 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.WindowInsets
 import android.view.inputmethod.InputConnection
+import android.view.inputmethod.EditorInfo
+import android.text.InputType
 import android.view.inputmethod.ExtractedTextRequest
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
@@ -23,9 +25,12 @@ import android.widget.PopupWindow
 import android.widget.ScrollView
 import android.widget.TextView
 import io.github.shvadart.inlineime.suggestion.AdaptiveWordSuggester
+import io.github.shvadart.inlineime.suggestion.AiCompletionClient
 import io.github.shvadart.inlineime.suggestion.CalculatorSuggestionProvider
 import io.github.shvadart.inlineime.suggestion.Suggestion
 import io.github.shvadart.inlineime.suggestion.SuggestionProvider
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicLong
 
 class InlineImeService : InputMethodService() {
     private enum class Language { RU, EN }
@@ -55,6 +60,16 @@ class InlineImeService : InputMethodService() {
     private lateinit var spaceButton: TextView
 
     private val gestureHandler = Handler(Looper.getMainLooper())
+    private val aiHandler = Handler(Looper.getMainLooper())
+    private val aiExecutor = Executors.newSingleThreadExecutor()
+    private val aiRequestGeneration = AtomicLong(0L)
+    private var aiDebounceRunnable: Runnable? = null
+    private var aiCompletion: String? = null
+    private var aiCompletionContext: String? = null
+    private val aiPrefs by lazy { getSharedPreferences("ai_completion", MODE_PRIVATE) }
+    private val aiClient by lazy {
+        AiCompletionClient { aiPrefs.getString(KEY_AI_ENDPOINT, "").orEmpty() }
+    }
     private var deleteHoldStartedAt = 0L
     private var deleteRepeatRunnable: Runnable? = null
     private var deleteClearPopup: PopupWindow? = null
@@ -149,8 +164,15 @@ class InlineImeService : InputMethodService() {
     }
 
     override fun onFinishInputView(finishingInput: Boolean) {
+        cancelAiCompletion()
         stopClipboardHistory()
         super.onFinishInputView(finishingInput)
+    }
+
+    override fun onDestroy() {
+        cancelAiCompletion()
+        aiExecutor.shutdownNow()
+        super.onDestroy()
     }
 
     override fun onUpdateSelection(
@@ -899,6 +921,73 @@ class InlineImeService : InputMethodService() {
         refreshSuggestion()
     }
 
+    private fun cancelAiCompletion() {
+        aiDebounceRunnable?.let(aiHandler::removeCallbacks)
+        aiDebounceRunnable = null
+        aiRequestGeneration.incrementAndGet()
+        aiCompletion = null
+        aiCompletionContext = null
+    }
+
+    private fun aiAllowedForCurrentEditor(): Boolean {
+        val info = currentInputEditorInfo ?: return false
+        val inputType = info.inputType
+        val variation = inputType and InputType.TYPE_MASK_VARIATION
+        val isText = inputType and InputType.TYPE_MASK_CLASS == InputType.TYPE_CLASS_TEXT
+        if (!isText) return false
+        if (info.imeOptions and EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING != 0) return false
+        return variation !in setOf(
+            InputType.TYPE_TEXT_VARIATION_PASSWORD,
+            InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD,
+            InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD,
+        )
+    }
+
+    private fun scheduleAiCompletion(contextBeforeCursor: String) {
+        aiDebounceRunnable?.let(aiHandler::removeCallbacks)
+        aiDebounceRunnable = null
+        aiCompletion = null
+        aiCompletionContext = null
+
+        if (!aiAllowedForCurrentEditor()) return
+        if (aiPrefs.getString(KEY_AI_ENDPOINT, "").isNullOrBlank()) return
+        val context = contextBeforeCursor.takeLast(AI_CONTEXT_LENGTH)
+        if (context.trim().length < AI_MIN_CONTEXT_LENGTH) return
+
+        val generation = aiRequestGeneration.incrementAndGet()
+        val runnable = Runnable {
+            aiExecutor.execute {
+                val completion = aiClient.complete(
+                    context = context,
+                    language = if (language == Language.RU) "ru" else "en",
+                )
+                aiHandler.post {
+                    if (generation != aiRequestGeneration.get()) return@post
+                    val current = currentInputConnection
+                        ?.getTextBeforeCursor(AI_CONTEXT_LENGTH, 0)
+                        ?.toString()
+                        .orEmpty()
+                    if (!current.endsWith(context)) return@post
+                    aiCompletion = completion
+                    aiCompletionContext = if (completion != null) context else null
+                    if (completion != null) refreshSuggestion()
+                }
+            }
+        }
+        aiDebounceRunnable = runnable
+        aiHandler.postDelayed(runnable, AI_DEBOUNCE_MS)
+    }
+
+    private fun applyAiCompletion(completion: String) {
+        rememberEditorState()
+        currentInputConnection?.commitText(completion, 1)
+        aiRequestGeneration.incrementAndGet()
+        aiCompletion = null
+        aiCompletionContext = null
+        syncAutoShiftFromCursor()
+        refreshSuggestion()
+    }
+
     private fun refreshSuggestion() {
         if (!::suggestionRow.isInitialized) return
         val beforeCursor = currentInputConnection
@@ -912,6 +1001,8 @@ class InlineImeService : InputMethodService() {
 
         val calculator = activeSuggestion
         if (calculator != null) {
+            aiDebounceRunnable?.let(aiHandler::removeCallbacks)
+            aiDebounceRunnable = null
             showSuggestionChoices(listOf(calculator.text)) { choice ->
                 rememberEditorState()
                 currentInputConnection?.commitText(choice, 1)
@@ -919,6 +1010,17 @@ class InlineImeService : InputMethodService() {
             }
             return
         }
+
+        val readyAiCompletion = aiCompletion
+            ?.takeIf { aiCompletionContext?.let(beforeCursor::endsWith) == true }
+        if (readyAiCompletion != null) {
+            showSuggestionChoices(listOf("✨ $readyAiCompletion")) {
+                applyAiCompletion(readyAiCompletion)
+            }
+            return
+        }
+
+        scheduleAiCompletion(beforeCursor)
 
         val splitCandidate = wordSuggester.splitRunTogetherWord(
             beforeCursor,
@@ -1285,6 +1387,10 @@ class InlineImeService : InputMethodService() {
         (value * resources.displayMetrics.density).toInt()
 
     private companion object {
+        const val KEY_AI_ENDPOINT = "endpoint"
+        const val AI_DEBOUNCE_MS = 650L
+        const val AI_CONTEXT_LENGTH = 768
+        const val AI_MIN_CONTEXT_LENGTH = 12
         const val PASTE_CHUNK_SIZE = 8 * 1024
         const val CLIPBOARD_HISTORY_LIMIT = 50
         const val CLIPBOARD_PREVIEW_LENGTH = 120
