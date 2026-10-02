@@ -113,7 +113,7 @@ class InlineImeService : InputMethodService() {
         suggestionRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            visibility = View.GONE
+            visibility = View.VISIBLE
         }
         repeat(3) {
             val button = suggestionView()
@@ -762,12 +762,33 @@ class InlineImeService : InputMethodService() {
     }
 
     private fun commitTextKey(text: String) {
-        val before = currentInputConnection?.getTextBeforeCursor(256, 0)?.toString().orEmpty()
-        if (text.any { it.isWhitespace() || it in ".,!?;:" }) {
-            wordSuggester.observeCommittedWord(wordSuggester.currentWord(before))
+        val ic = currentInputConnection ?: return
+        val before = ic.getTextBeforeCursor(256, 0)?.toString().orEmpty()
+        val commitsWord = text.any { it.isWhitespace() || it in ".,!?;:" }
+
+        if (commitsWord) {
+            val typedWord = wordSuggester.currentWord(before)
+            val correction = wordSuggester.autocorrect(before, russian = language == Language.RU)
+            if (correction != null && typedWord.isNotEmpty()) {
+                rememberEditorState()
+                ic.beginBatchEdit()
+                try {
+                    ic.deleteSurroundingText(typedWord.length, 0)
+                    ic.commitText(correction.word, 1)
+                    ic.commitText(text, 1)
+                } finally {
+                    ic.endBatchEdit()
+                }
+                wordSuggester.observeCommittedWord(correction.word)
+                syncAutoShiftFromCursor()
+                refreshSuggestion()
+                return
+            }
+            wordSuggester.observeCommittedWord(typedWord)
         }
+
         rememberEditorState()
-        currentInputConnection?.commitText(text, 1)
+        ic.commitText(text, 1)
         syncAutoShiftFromCursor()
         refreshSuggestion()
     }
@@ -853,8 +874,12 @@ class InlineImeService : InputMethodService() {
             .map { it.word }
 
         if (candidates.isEmpty()) {
-            suggestionRow.visibility = View.GONE
-            suggestionButtons.forEach { it.visibility = View.GONE }
+            suggestionRow.visibility = View.VISIBLE
+            suggestionButtons.forEach {
+                it.text = ""
+                it.visibility = View.INVISIBLE
+                it.setOnClickListener(null)
+            }
             return
         }
 
@@ -867,7 +892,7 @@ class InlineImeService : InputMethodService() {
             val choice = choices.getOrNull(index)
             if (choice == null) {
                 button.text = ""
-                button.visibility = View.GONE
+                button.visibility = View.INVISIBLE
                 button.setOnClickListener(null)
             } else {
                 button.text = choice
