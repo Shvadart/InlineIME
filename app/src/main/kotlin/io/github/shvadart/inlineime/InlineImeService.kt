@@ -732,9 +732,13 @@ class InlineImeService : InputMethodService() {
     private fun commitLetter(text: String) {
         rememberEditorState()
         currentInputConnection?.commitText(text, 1)
-        if (shift && !capsLock) {
-            shift = false
-            renderLetterRows()
+        if (!capsLock) {
+            val before = currentInputConnection?.getTextBeforeCursor(512, 0)?.toString().orEmpty()
+            val shouldShift = shouldAutoShift(before)
+            if (shift != shouldShift) {
+                shift = shouldShift
+                renderLetterRows()
+            }
         }
         refreshSuggestion()
     }
@@ -749,17 +753,37 @@ class InlineImeService : InputMethodService() {
     private fun syncAutoShiftFromCursor() {
         if (capsLock) return
         val before = currentInputConnection?.getTextBeforeCursor(512, 0)?.toString().orEmpty()
-        val shouldShift = before.isEmpty() || before.lastOrNull() == '\n' ||
-            before.trimEnd().lastOrNull() in setOf('.', '!', '?')
+        val shouldShift = shouldAutoShift(before)
         if (shift != shouldShift) {
             shift = shouldShift
             renderLetterRows()
         }
     }
 
+    private fun shouldAutoShift(before: String): Boolean {
+        if (before.isEmpty() || before.lastOrNull() == '\n') return true
+
+        val trimmed = before.trimEnd()
+        val last = trimmed.lastOrNull() ?: return true
+        if (last !in setOf('.', '!', '?')) return false
+
+        // A punctuation mark directly inside a token is usually a domain, e-mail, URL,
+        // filename, version number, etc. Examples: mail.ru, gmail.com, foo.bar.
+        if (before.lastOrNull() == last) {
+            val previous = before.dropLast(1).lastOrNull()
+            if (previous != null && (previous.isLetterOrDigit() || previous in setOf('@', '_', '-', '/', ':'))) {
+                return false
+            }
+        }
+        return true
+    }
+
     private fun enableAutoShift() {
-        if (!capsLock && !shift) {
-            shift = true
+        if (capsLock) return
+        val before = currentInputConnection?.getTextBeforeCursor(512, 0)?.toString().orEmpty()
+        val shouldShift = shouldAutoShift(before)
+        if (shift != shouldShift) {
+            shift = shouldShift
             renderLetterRows()
         }
     }
