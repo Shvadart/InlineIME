@@ -53,13 +53,15 @@ class AdaptiveWordSuggester(context: Context, private val prefs: SharedPreferenc
             .mapNotNull { word ->
                 val comparableWord = normalizeRussianYo(word, russian)
                 val prefixMatch = comparableWord.startsWith(query)
-                val typoCost = if (prefixMatch) 0 else keyboardAwareDistance(query, comparableWord, 24)
+                val typoCost = if (prefixMatch) 0 else keyboardAwareDistance(query, comparableWord, 34)
                 val distance = if (prefixMatch) 0 else boundedDistance(query, comparableWord, 3)
                 val score = when {
                     prefixMatch -> 10_000 - (word.length - query.length) * 20
                     typoCost <= 10 -> 8_200
                     typoCost <= 16 && query.length >= 4 -> 6_500
                     typoCost <= 24 && query.length >= 5 -> 4_800
+                    typoCost <= 30 && query.length >= 7 -> 3_900
+                    typoCost <= 34 && query.length >= 9 -> 3_200
                     else -> return@mapNotNull null
                 } + (usage[word] ?: 0) * 120
                 WordCandidate(
@@ -151,7 +153,8 @@ class AdaptiveWordSuggester(context: Context, private val prefs: SharedPreferenc
             raw.length == 4 -> 10
             raw.length == 5 -> 16
             raw.length in 6..7 -> 24
-            else -> 30
+            raw.length in 8..9 -> 30
+            else -> 34
         }
         if (best.typoCost > threshold) return null
         if (raw.length <= 5 && runnerUp != null && best.score - runnerUp.score < 500) return null
