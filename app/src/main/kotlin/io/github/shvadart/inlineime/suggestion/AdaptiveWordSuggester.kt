@@ -271,7 +271,15 @@ class AdaptiveWordSuggester(context: Context, private val prefs: SharedPreferenc
         val pb = keyPosition(rows, b) ?: return false
         val rowDelta = kotlin.math.abs(pa.first - pb.first)
         val colDelta = kotlin.math.abs(pa.second - pb.second)
-        return rowDelta <= 1 && colDelta <= 1
+
+        // Rows on a phone keyboard are horizontally staggered. A key on the
+        // neighbouring row can physically overlap two logical columns, so a
+        // diagonal miss may have colDelta == 2 (for example ь -> о).
+        return when (rowDelta) {
+            0 -> colDelta <= 1
+            1 -> colDelta <= 2
+            else -> false
+        }
     }
 
     private fun keyPosition(rows: List<String>, char: Char): Pair<Int, Int>? {
