@@ -42,6 +42,10 @@ class AdaptiveWordSuggester(context: Context, private val prefs: SharedPreferenc
         val pool = LinkedHashSet<String>().apply {
             addAll(base)
             addAll(usage.keys.filter { word -> word.any { it in 'а'..'я' || it == 'ё' } == russian })
+            // The full 2.35M-form dictionary now participates in correction,
+            // without scanning it: generate plausible edits and validate them
+            // against the compact membership index.
+            if (russian) addAll(russianDictionary.candidates(query, limit = 16))
         }
 
         return pool.asSequence()
@@ -165,8 +169,8 @@ class AdaptiveWordSuggester(context: Context, private val prefs: SharedPreferenc
         for (split in 2..normalized.length - 2) {
             val left = normalized.substring(0, split)
             val right = normalized.substring(split)
-            if (left !in base && left !in usage) continue
-            if (right !in base && right !in usage) continue
+            if (!isKnownWord(left, russian)) continue
+            if (!isKnownWord(right, russian)) continue
             val score = (usage[left] ?: 0) + (usage[right] ?: 0) + min(left.length, right.length)
             if (score > bestScore) {
                 best = left to right
