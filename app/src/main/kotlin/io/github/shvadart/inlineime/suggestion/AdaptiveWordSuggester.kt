@@ -7,6 +7,8 @@ import kotlin.math.min
 data class WordCandidate(
     val word: String,
     val score: Int,
+    val editDistance: Int,
+    val prefixMatch: Boolean,
 )
 
 class AdaptiveWordSuggester(private val prefs: SharedPreferences) {
@@ -46,7 +48,12 @@ class AdaptiveWordSuggester(private val prefs: SharedPreferences) {
                     distance == 2 && query.length >= 5 -> 4_000
                     else -> return@mapNotNull null
                 } + (usage[word] ?: 0) * 120
-                WordCandidate(matchCase(raw, word), score)
+                WordCandidate(
+                    word = matchCase(raw, word),
+                    score = score,
+                    editDistance = distance,
+                    prefixMatch = word.startsWith(query),
+                )
             }
             .sortedByDescending { it.score }
             .take(limit)
@@ -73,6 +80,20 @@ class AdaptiveWordSuggester(private val prefs: SharedPreferences) {
     }
 
     fun currentWord(context: String): String = extractCurrentWord(context)
+
+    fun isKnownWord(word: String, russian: Boolean): Boolean {
+        val normalized = word.lowercase(Locale.ROOT)
+        val base = if (russian) RU_WORDS else EN_WORDS
+        return normalized in base || normalized in usage
+    }
+
+    fun autocorrect(contextBeforeCursor: String, russian: Boolean): WordCandidate? {
+        val raw = extractCurrentWord(contextBeforeCursor)
+        if (raw.length < 3 || isTechnicalContext(contextBeforeCursor, raw)) return null
+        if (isKnownWord(raw, russian)) return null
+        return suggest(contextBeforeCursor, russian, limit = 3)
+            .firstOrNull { !it.prefixMatch && it.editDistance == 1 }
+    }
 
     private fun extractCurrentWord(text: String): String =
         text.takeLastWhile { it.isLetter() || it == '-' || it == '\'' }
