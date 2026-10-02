@@ -564,7 +564,16 @@ class InlineImeService : InputMethodService() {
         chars.forEach { char ->
             val label = (if (shift) char.uppercaseChar() else char).toString()
             row.addView(
-                keyView(label).apply { setOnClickListener { commitLetter(label) } },
+                keyView(label).apply {
+                    setOnClickListener { commitLetter(label) }
+                    if (language == Language.RU && char == 'ь') {
+                        setOnLongClickListener {
+                            performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+                            commitLetter(if (shift) "Ъ" else "ъ")
+                            true
+                        }
+                    }
+                },
                 weightedKeyParams(1f, dp(56)),
             )
         }
