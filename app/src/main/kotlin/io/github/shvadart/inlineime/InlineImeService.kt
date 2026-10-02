@@ -924,27 +924,71 @@ class InlineImeService : InputMethodService() {
             beforeCursor,
             russian = language == Language.RU,
         )
+        val personalSuggestions = wordSuggester.personalSuggestions(beforeCursor, limit = 3)
         val candidates = buildList {
-            if (splitCandidate != null) add(splitCandidate)
+            addAll(personalSuggestions)
+            if (splitCandidate != null && splitCandidate !in this) add(splitCandidate)
             addAll(
                 wordSuggester
                     .suggest(beforeCursor, russian = language == Language.RU, limit = 3)
                     .map { it.word }
-                    .filter { it != splitCandidate },
+                    .filter { it != splitCandidate && it !in this },
             )
         }.take(3)
 
         if (candidates.isEmpty()) {
-            suggestionRow.visibility = View.VISIBLE
-            suggestionButtons.forEach {
-                it.text = ""
-                it.visibility = View.INVISIBLE
-                it.setOnClickListener(null)
+            val personalCandidate = wordSuggester.personalEntryCandidate(beforeCursor)
+            if (personalCandidate != null) {
+                showPersonalEntryCandidate(personalCandidate)
+            } else {
+                suggestionRow.visibility = View.VISIBLE
+                suggestionButtons.forEach {
+                    it.text = ""
+                    it.visibility = View.INVISIBLE
+                    it.setOnClickListener(null)
+                    it.setOnLongClickListener(null)
+                }
             }
             return
         }
 
-        showSuggestionChoices(candidates) { choice -> applyWordSuggestion(beforeCursor, choice) }
+        showSuggestionChoices(candidates) { choice ->
+            val personalToken = wordSuggester.currentPersonalToken(beforeCursor)
+            if (personalSuggestions.any { it == choice } && personalToken.isNotEmpty()) {
+                applyPersonalSuggestion(personalToken, choice)
+            } else {
+                applyWordSuggestion(beforeCursor, choice)
+            }
+        }
+    }
+
+    private fun showPersonalEntryCandidate(candidate: String) {
+        suggestionRow.visibility = View.VISIBLE
+        suggestionButtons.forEachIndexed { index, button ->
+            if (index == 1) {
+                button.text = candidate
+                button.visibility = View.VISIBLE
+                button.setOnClickListener(null)
+                button.setOnLongClickListener {
+                    wordSuggester.addPersonalEntry(candidate)
+                    button.text = "✓ $candidate"
+                    true
+                }
+            } else {
+                button.text = ""
+                button.visibility = View.INVISIBLE
+                button.setOnClickListener(null)
+                button.setOnLongClickListener(null)
+            }
+        }
+    }
+
+    private fun applyPersonalSuggestion(currentToken: String, replacement: String) {
+        val ic = currentInputConnection ?: return
+        rememberEditorState()
+        ic.deleteSurroundingText(currentToken.length, 0)
+        ic.commitText(replacement, 1)
+        refreshSuggestion()
     }
 
     private fun showSuggestionChoices(choices: List<String>, onChoice: (String) -> Unit) {
@@ -955,10 +999,12 @@ class InlineImeService : InputMethodService() {
                 button.text = ""
                 button.visibility = View.INVISIBLE
                 button.setOnClickListener(null)
+                button.setOnLongClickListener(null)
             } else {
                 button.text = choice
                 button.visibility = View.VISIBLE
                 button.setOnClickListener { onChoice(choice) }
+                button.setOnLongClickListener(null)
             }
         }
     }
