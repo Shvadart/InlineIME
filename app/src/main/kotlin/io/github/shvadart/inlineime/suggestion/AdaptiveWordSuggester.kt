@@ -31,7 +31,7 @@ class AdaptiveWordSuggester(private val prefs: SharedPreferences) {
         val raw = extractCurrentWord(contextBeforeCursor)
         if (raw.length < 2 || isTechnicalContext(contextBeforeCursor, raw)) return emptyList()
         val query = raw.lowercase(Locale.ROOT)
-        if (!query.all { it.isLetter() }) return emptyList()
+        if (!query.all { it.isLetterOrDigit() }) return emptyList()
 
         val base = if (russian) RU_WORDS else EN_WORDS
         val pool = LinkedHashSet<String>().apply {
