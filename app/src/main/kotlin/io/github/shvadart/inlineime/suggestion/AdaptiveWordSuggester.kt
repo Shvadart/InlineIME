@@ -33,7 +33,7 @@ class AdaptiveWordSuggester(private val prefs: SharedPreferences) {
         // A correctly typed dictionary/personal word must not receive fuzzy "corrections".
         // This prevents valid words such as "потом" -> "потому" or "меня" -> another nearby word.
         if (isKnownWord(raw, russian)) return emptyList()
-        val query = raw.lowercase(Locale.ROOT)
+        val query = normalizeRussianYo(raw.lowercase(Locale.ROOT), russian)
         if (!query.all { it.isLetterOrDigit() }) return emptyList()
 
         val base = if (russian) RU_WORDS else EN_WORDS
@@ -43,11 +43,12 @@ class AdaptiveWordSuggester(private val prefs: SharedPreferences) {
         }
 
         return pool.asSequence()
-            .filter { it != query }
+            .filter { normalizeRussianYo(it, russian) != query }
             .mapNotNull { word ->
-                val prefixMatch = word.startsWith(query)
-                val typoCost = if (prefixMatch) 0 else keyboardAwareDistance(query, word, 24)
-                val distance = if (prefixMatch) 0 else boundedDistance(query, word, 3)
+                val comparableWord = normalizeRussianYo(word, russian)
+                val prefixMatch = comparableWord.startsWith(query)
+                val typoCost = if (prefixMatch) 0 else keyboardAwareDistance(query, comparableWord, 24)
+                val distance = if (prefixMatch) 0 else boundedDistance(query, comparableWord, 3)
                 val score = when {
                     prefixMatch -> 10_000 - (word.length - query.length) * 20
                     typoCost <= 10 -> 8_200
@@ -90,9 +91,10 @@ class AdaptiveWordSuggester(private val prefs: SharedPreferences) {
     fun currentWord(context: String): String = extractCurrentWord(context)
 
     fun isKnownWord(word: String, russian: Boolean): Boolean {
-        val normalized = word.lowercase(Locale.ROOT)
+        val normalized = normalizeRussianYo(word.lowercase(Locale.ROOT), russian)
         val base = if (russian) RU_WORDS else EN_WORDS
-        return normalized in base || normalized in usage
+        return base.any { normalizeRussianYo(it, russian) == normalized } ||
+            usage.keys.any { normalizeRussianYo(it, russian) == normalized }
     }
 
     fun autocorrect(contextBeforeCursor: String, russian: Boolean): WordCandidate? {
@@ -153,6 +155,9 @@ class AdaptiveWordSuggester(private val prefs: SharedPreferences) {
         val token = prefix.takeLastWhile { !it.isWhitespace() }
         return token.any { it in "@/:._" } || token.contains("www", ignoreCase = true)
     }
+
+    private fun normalizeRussianYo(value: String, russian: Boolean): String =
+        if (russian) value.replace('ё', 'е') else value
 
     private fun matchCase(source: String, candidate: String): String = when {
         source.all { !it.isLetter() || it.isUpperCase() } -> candidate.uppercase(Locale.ROOT)
@@ -262,7 +267,35 @@ class AdaptiveWordSuggester(private val prefs: SharedPreferences) {
             "чего","чем","что","чтобы","это","этого","этот","я","работает","работать","сервер","клавиатура","текст","слово",
             "слова","нужно","нормально","готово","отлично","спасибо","сегодня","завтра","потом","вопрос","ответ","проверить",
             "работа","работы","работу","печатать","печатаю","печатал","вручную","ошибка","ошибки","ошибку","исправить",
-            "исправлять","замена","заменить","автоматически","автоматическая","предложение","предложения","разделить"
+            "исправлять","замена","заменить","автоматически","автоматическая","предложение","предложения","разделить",
+            "потому","поэтому","которые","которая","которое","которые","которого","которой","которым","которых",
+            "такой","такая","такое","такие","таких","такого","такую","какой","какая","какое","какие","каких",
+            "этим","этом","этому","эти","этих","эту","того","тому","тем","тех","себя","себе","свой","свои","свою",
+            "твой","твоя","твое","твои","ваша","ваше","ваши","моего","моей","мою","мои","наша","наше","наши",
+            "человек","люди","день","дня","дней","год","года","лет","раза","разом","место","места","дело","дела",
+            "работы","работе","работой","работаю","работает","работают","работал","работала","работали","сделал",
+            "сделала","сделали","сделаю","делаю","делает","делают","делал","делала","делали","сделано","сделать",
+            "хотел","хотела","хотим","хотите","хочешь","хочет","хотят","могу","можешь","можем","можете","мог",
+            "было","буду","будешь","будем","будете","будут","стал","стала","стали","стало","стать","идти","иду",
+            "идет","идут","пойти","пришел","пришла","пришли","приходит","приходят","знать","знаю","знаешь","знает",
+            "видеть","вижу","видишь","видит","смотреть","смотрю","смотри","говорить","говорю","говорит","говорят",
+            "написать","написал","написала","пишу","пишет","читать","читаю","получить","получил","получилось",
+            "проверка","проверил","проверила","проверим","работоспособность","настройка","настройки","настроить",
+            "проблема","проблемы","ошибок","ошибкой","ошибку","правильно","неправильно","верно","вариант","варианты",
+            "например","сначала","снова","сразу","перед","через","между","рядом","внутри","вместо","вокруг","около",
+            "сюда","туда","откуда","потом","раньше","позже","иногда","часто","редко","обычно","конечно","возможно",
+            "точно","почти","совсем","немного","много","мало","достаточно","быстро","медленно","долго","легко","сложно",
+            "новый","новая","новое","новые","старый","большой","маленький","хороший","плохой","первый","последний",
+            "другой","другая","другое","другие","следующий","следующая","каждый","каждая","любой","нужный","нужная",
+            "русский","русская","английский","буква","буквы","буквой","букве","словарь","словаря","словаре","словари",
+            "слово","словом","словах","текста","тексте","писать","печатать","напечатать","исправление","исправления",
+            "замены","заменяет","заменил","заменила","исправляет","исправил","исправила","автозамена","подсказка",
+            "подсказки","клавиатуре","клавиатуры","клавиатурой","телефон","телефоне","приложение","приложения",
+            "файл","файлы","папка","папки","команда","команды","код","сервере","сервера","сервис","сервисы",
+            "система","системы","версия","версии","обновление","обновить","установить","установка","скачать","загрузить",
+            "интернет","сеть","сети","адрес","домен","домены","почта","ссылка","ссылки","сайт","сайта","страница",
+            "ещё","всё","идёт","пойдёт","найдёт","найти","нашёл","нашла","берёт","даёт","даём","моё","твоё","своё",
+            "еще","все","идет","пойдет","найдет","берет","дает","даем","мое","твое","свое"
         )
         val EN_WORDS = setOf(
             "a","about","after","again","all","also","and","any","are","as","at","back","be","because","been","before",
