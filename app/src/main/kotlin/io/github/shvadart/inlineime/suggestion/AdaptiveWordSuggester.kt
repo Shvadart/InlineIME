@@ -1,5 +1,6 @@
 package io.github.shvadart.inlineime.suggestion
 
+import android.content.Context
 import android.content.SharedPreferences
 import java.util.Locale
 import kotlin.math.min
@@ -12,7 +13,8 @@ data class WordCandidate(
     val typoCost: Int = editDistance * 10,
 )
 
-class AdaptiveWordSuggester(private val prefs: SharedPreferences) {
+class AdaptiveWordSuggester(context: Context, private val prefs: SharedPreferences) {
+    private val russianDictionary = RussianBloomDictionary(context)
     private val usage = mutableMapOf<String, Int>()
     private val observations = mutableMapOf<String, Int>()
 
@@ -94,7 +96,8 @@ class AdaptiveWordSuggester(private val prefs: SharedPreferences) {
         val normalized = normalizeRussianYo(word.lowercase(Locale.ROOT), russian)
         val base = if (russian) RU_WORDS else EN_WORDS
         return base.any { normalizeRussianYo(it, russian) == normalized } ||
-            usage.keys.any { normalizeRussianYo(it, russian) == normalized }
+            usage.keys.any { normalizeRussianYo(it, russian) == normalized } ||
+            (russian && russianDictionary.contains(normalized))
     }
 
     fun autocorrect(contextBeforeCursor: String, russian: Boolean): WordCandidate? {
