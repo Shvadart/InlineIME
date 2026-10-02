@@ -25,7 +25,7 @@ class AdaptiveWordSuggester(private val prefs: SharedPreferences) {
     }
 
     fun suggest(contextBeforeCursor: String, russian: Boolean, limit: Int = 3): List<WordCandidate> {
-        val raw = currentWord(contextBeforeCursor)
+        val raw = extractCurrentWord(contextBeforeCursor)
         if (raw.length < 2 || isTechnicalContext(contextBeforeCursor, raw)) return emptyList()
         val query = raw.lowercase(Locale.ROOT)
         if (!query.all { it.isLetter() }) return emptyList()
@@ -72,9 +72,9 @@ class AdaptiveWordSuggester(private val prefs: SharedPreferences) {
         saveObservations()
     }
 
-    fun currentWord(context: String): String = currentWord(context)
+    fun currentWord(context: String): String = extractCurrentWord(context)
 
-    private fun currentWord(text: String): String =
+    private fun extractCurrentWord(text: String): String =
         text.takeLastWhile { it.isLetter() || it == '-' || it == '\'' }
 
     private fun isTechnicalContext(context: String, word: String): Boolean {
