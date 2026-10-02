@@ -159,6 +159,11 @@ class InlineImeService : InputMethodService() {
 
     override fun onStartInputView(info: android.view.inputmethod.EditorInfo?, restarting: Boolean) {
         super.onStartInputView(info, restarting)
+        if (info != null && !autoCapitalizationAllowed(info)) {
+            capsLock = false
+            shift = false
+            renderLetterRows()
+        }
         undoStack.clear()
         redoStack.clear()
         loadClipboardHistory()
@@ -900,7 +905,18 @@ class InlineImeService : InputMethodService() {
         }
     }
 
+    private fun autoCapitalizationAllowed(info: EditorInfo = currentInputEditorInfo ?: return false): Boolean {
+        val inputType = info.inputType
+        if (inputType and InputType.TYPE_MASK_CLASS != InputType.TYPE_CLASS_TEXT) return false
+
+        // Terminal/console editors (including Termux) commonly expose a text field
+        // without sentence-capitalization support. Respect the editor flags instead
+        // of forcing Shift after every new terminal line.
+        return inputType and InputType.TYPE_TEXT_FLAG_CAP_SENTENCES != 0
+    }
+
     private fun shouldAutoShift(before: String): Boolean {
+        if (!autoCapitalizationAllowed()) return false
         if (before.isEmpty() || before.lastOrNull() == '\n') return true
 
         // Sentence capitalization starts only after punctuation followed by whitespace.
