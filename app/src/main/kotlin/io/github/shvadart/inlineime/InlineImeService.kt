@@ -159,6 +159,12 @@ class InlineImeService : InputMethodService() {
 
     override fun onStartInputView(info: android.view.inputmethod.EditorInfo?, restarting: Boolean) {
         super.onStartInputView(info, restarting)
+
+        // Android may keep the IME view instance alive across screen-off/unlock.
+        // Rebuild the keyboard subtree here so it cannot come back with stale
+        // measured rows or a partially restored layout.
+        showKeyboardContent()
+        window?.window?.decorView?.requestApplyInsets()
         if (info != null && !autoCapitalizationAllowed(info)) {
             capsLock = false
             shift = false
