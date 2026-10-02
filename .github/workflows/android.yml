@@ -41,6 +41,9 @@ jobs:
           echo "INLINEIME_VERSION_CODE=$((1000 + GITHUB_RUN_NUMBER))" >> "$GITHUB_ENV"
           echo "INLINEIME_VERSION_NAME=0.1.0-ci.${GITHUB_RUN_NUMBER}" >> "$GITHUB_ENV"
 
+      - name: Build Russian dictionary index
+        run: python3 tools/build_ru_dictionary.py
+
       - name: Build debug APK for pull requests
         if: github.event_name == 'pull_request'
         run: gradle :app:assembleDebug --stacktrace
