@@ -105,7 +105,8 @@ class RussianBloomDictionary(context: Context) {
             if (col < 0) continue
             for (r in (rowIndex - 1)..(rowIndex + 1)) {
                 if (r !in RU_ROWS.indices) continue
-                for (c in (col - 1)..(col + 1)) {
+                val radius = if (r == rowIndex) 1 else 2
+                for (c in (col - radius)..(col + radius)) {
                     if (c in RU_ROWS[r].indices) result += RU_ROWS[r][c]
                 }
             }
