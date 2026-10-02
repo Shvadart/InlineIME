@@ -852,15 +852,38 @@ class InlineImeService : InputMethodService() {
 
     private fun restoreEditorSnapshot(snapshot: EditorSnapshot) {
         val ic = currentInputConnection ?: return
+        val current = currentEditorSnapshot() ?: return
         restoringEditorHistory = true
         try {
-            val current = ic.getExtractedText(ExtractedTextRequest(), 0)
-            val length = current?.text?.length ?: 0
+            val oldText = current.text
+            val newText = snapshot.text
+
+            // Restore only the changed span. Replacing the whole editor contents made some
+            // editors reinterpret embedded newlines / submit boundaries and produced phantom Enters.
+            var prefix = 0
+            val commonLimit = minOf(oldText.length, newText.length)
+            while (prefix < commonLimit && oldText[prefix] == newText[prefix]) prefix++
+
+            var suffix = 0
+            val oldRemaining = oldText.length - prefix
+            val newRemaining = newText.length - prefix
+            while (
+                suffix < oldRemaining &&
+                suffix < newRemaining &&
+                oldText[oldText.length - 1 - suffix] == newText[newText.length - 1 - suffix]
+            ) {
+                suffix++
+            }
+
+            val oldEnd = oldText.length - suffix
+            val newEnd = newText.length - suffix
+            val replacement = newText.substring(prefix, newEnd)
+
             ic.beginBatchEdit()
-            ic.setSelection(0, length)
-            if (length > 0) ic.commitText("", 1)
-            if (snapshot.text.isNotEmpty()) ic.commitText(snapshot.text, 1)
-            val max = snapshot.text.length
+            ic.setSelection(prefix, oldEnd)
+            ic.commitText(replacement, 1)
+
+            val max = newText.length
             ic.setSelection(
                 snapshot.selectionStart.coerceIn(0, max),
                 snapshot.selectionEnd.coerceIn(0, max),
