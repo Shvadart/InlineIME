@@ -19,13 +19,24 @@ class AdaptiveWordSuggester(context: Context, private val prefs: SharedPreferenc
     private val observations = mutableMapOf<String, Int>()
 
     init {
-        prefs.getStringSet(KEY_USAGE, emptySet()).orEmpty().forEach { encoded ->
-            val split = encoded.lastIndexOf(':')
-            if (split > 0) usage[encoded.substring(0, split)] = encoded.substring(split + 1).toIntOrNull() ?: 1
-        }
-        prefs.getStringSet(KEY_OBSERVATIONS, emptySet()).orEmpty().forEach { encoded ->
-            val split = encoded.lastIndexOf(':')
-            if (split > 0) observations[encoded.substring(0, split)] = encoded.substring(split + 1).toIntOrNull() ?: 1
+        // Older builds promoted any repeated unknown token after only three uses.
+        // During typo testing that polluted the personal vocabulary. Reset that
+        // legacy adaptive state once when this safer learning schema is installed.
+        if (prefs.getInt(KEY_LEARNING_SCHEMA, 0) < LEARNING_SCHEMA) {
+            prefs.edit()
+                .remove(KEY_USAGE)
+                .remove(KEY_OBSERVATIONS)
+                .putInt(KEY_LEARNING_SCHEMA, LEARNING_SCHEMA)
+                .apply()
+        } else {
+            prefs.getStringSet(KEY_USAGE, emptySet()).orEmpty().forEach { encoded ->
+                val split = encoded.lastIndexOf(':')
+                if (split > 0) usage[encoded.substring(0, split)] = encoded.substring(split + 1).toIntOrNull() ?: 1
+            }
+            prefs.getStringSet(KEY_OBSERVATIONS, emptySet()).orEmpty().forEach { encoded ->
+                val split = encoded.lastIndexOf(':')
+                if (split > 0) observations[encoded.substring(0, split)] = encoded.substring(split + 1).toIntOrNull() ?: 1
+            }
         }
     }
 
@@ -80,19 +91,19 @@ class AdaptiveWordSuggester(context: Context, private val prefs: SharedPreferenc
     fun observeCommittedWord(word: String) {
         val normalized = word.lowercase(Locale.ROOT)
         if (normalized.length < 2 || !normalized.all { it.isLetter() }) return
-        val baseKnown = normalized in RU_WORDS || normalized in EN_WORDS
-        if (baseKnown || normalized in usage) {
-            usage[normalized] = (usage[normalized] ?: 0) + 1
-            saveUsage()
-            return
-        }
-        val seen = (observations[normalized] ?: 0) + 1
-        observations[normalized] = seen
-        if (seen >= TRUST_AFTER_OBSERVATIONS) {
-            observations.remove(normalized)
-            usage[normalized] = 1
-            saveUsage()
-        }
+
+        val isRussian = normalized.any { it in 'а'..'я' || it == 'ё' }
+        val verified = normalized in RU_WORDS ||
+            normalized in EN_WORDS ||
+            (isRussian && russianDictionary.contains(normalized))
+
+        // Repetition alone is not evidence that an unknown token is a real word.
+        // Names/slang/custom terms will be handled by an explicit Add action.
+        if (!verified && normalized !in usage) return
+
+        usage[normalized] = (usage[normalized] ?: 0) + 1
+        observations.remove(normalized)
+        saveUsage()
         saveObservations()
     }
 
@@ -289,6 +300,8 @@ class AdaptiveWordSuggester(context: Context, private val prefs: SharedPreferenc
     }
 
     private companion object {
+        const val KEY_LEARNING_SCHEMA = "learning_schema"
+        const val LEARNING_SCHEMA = 2
         const val KEY_USAGE = "word_usage"
         const val KEY_OBSERVATIONS = "word_observations"
         const val TRUST_AFTER_OBSERVATIONS = 3
