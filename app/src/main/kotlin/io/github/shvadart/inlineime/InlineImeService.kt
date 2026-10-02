@@ -17,6 +17,7 @@ import android.view.inputmethod.InputConnection
 import android.view.inputmethod.ExtractedTextRequest
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
+import android.widget.PopupWindow
 import android.widget.TextView
 import io.github.shvadart.inlineime.suggestion.CalculatorSuggestionProvider
 import io.github.shvadart.inlineime.suggestion.Suggestion
@@ -41,8 +42,10 @@ class InlineImeService : InputMethodService() {
     private lateinit var spaceButton: TextView
 
     private val gestureHandler = Handler(Looper.getMainLooper())
-    private var clearDeleteArmed = false
-    private var clearDeleteRunnable: Runnable? = null
+    private var deleteHoldStartedAt = 0L
+    private var deleteRepeatRunnable: Runnable? = null
+    private var deleteClearPopup: PopupWindow? = null
+    private var deleteClearTargeted = false
 
     private var activeSuggestion: Suggestion? = null
 
@@ -308,28 +311,36 @@ class InlineImeService : InputMethodService() {
                 setOnTouchListener { view, event ->
                     when (event.actionMasked) {
                         MotionEvent.ACTION_DOWN -> {
-                            clearDeleteArmed = false
-                            clearDeleteRunnable?.let(gestureHandler::removeCallbacks)
-                            clearDeleteRunnable = Runnable {
-                                clearDeleteArmed = true
-                                (view as TextView).text = "✕"
-                            }.also { gestureHandler.postDelayed(it, CLEAR_DELETE_HOLD_MS) }
+                            deleteHoldStartedAt = SystemClock.uptimeMillis()
+                            deleteClearTargeted = false
+                            startDeleteRepeat(view)
+                            true
+                        }
+                        MotionEvent.ACTION_MOVE -> {
+                            if (deleteClearPopup != null) {
+                                deleteClearTargeted =
+                                    event.x in 0f..view.width.toFloat() &&
+                                        event.y in -dp(76).toFloat()..-dp(4).toFloat()
+                                updateDeleteClearPopup()
+                            }
                             true
                         }
                         MotionEvent.ACTION_UP -> {
-                            clearDeleteRunnable?.let(gestureHandler::removeCallbacks)
-                            clearDeleteRunnable = null
-                            if (clearDeleteArmed) clearAllText() else deleteOne()
-                            clearDeleteArmed = false
-                            (view as TextView).text = "⌫"
+                            val wasRepeating = deleteRepeatRunnable != null &&
+                                SystemClock.uptimeMillis() - deleteHoldStartedAt >= DELETE_REPEAT_START_MS
+                            stopDeleteRepeat()
+                            if (deleteClearTargeted) {
+                                clearAllText()
+                            } else if (!wasRepeating) {
+                                deleteOne()
+                            }
+                            dismissDeleteClearPopup()
                             view.performClick()
                             true
                         }
                         MotionEvent.ACTION_CANCEL -> {
-                            clearDeleteRunnable?.let(gestureHandler::removeCallbacks)
-                            clearDeleteRunnable = null
-                            clearDeleteArmed = false
-                            (view as TextView).text = "⌫"
+                            stopDeleteRepeat()
+                            dismissDeleteClearPopup()
                             true
                         }
                         else -> true
@@ -345,6 +356,79 @@ class InlineImeService : InputMethodService() {
     private fun deleteOne() {
         currentInputConnection?.deleteSurroundingText(1, 0)
         refreshSuggestion()
+    }
+
+    private fun startDeleteRepeat(anchor: View) {
+        stopDeleteRepeat()
+        val runnable = object : Runnable {
+            override fun run() {
+                val elapsed = SystemClock.uptimeMillis() - deleteHoldStartedAt
+                if (elapsed >= DELETE_CLEAR_POPUP_MS && deleteClearPopup == null) {
+                    showDeleteClearPopup(anchor)
+                }
+                if (!deleteClearTargeted && elapsed >= DELETE_REPEAT_START_MS) {
+                    if (elapsed >= DELETE_WORD_MODE_MS) deleteWordBeforeCursor() else deleteOne()
+                }
+                val delay = when {
+                    elapsed >= DELETE_WORD_MODE_MS -> DELETE_WORD_INTERVAL_MS
+                    elapsed >= DELETE_FAST_MODE_MS -> DELETE_FAST_INTERVAL_MS
+                    else -> DELETE_INITIAL_INTERVAL_MS
+                }
+                gestureHandler.postDelayed(this, delay)
+            }
+        }
+        deleteRepeatRunnable = runnable
+        gestureHandler.postDelayed(runnable, DELETE_REPEAT_START_MS)
+    }
+
+    private fun stopDeleteRepeat() {
+        deleteRepeatRunnable?.let(gestureHandler::removeCallbacks)
+        deleteRepeatRunnable = null
+    }
+
+    private fun deleteWordBeforeCursor() {
+        val ic = currentInputConnection ?: return
+        val before = ic.getTextBeforeCursor(128, 0)?.toString().orEmpty()
+        if (before.isEmpty()) return
+        val trimmedEnd = before.indexOfLast { !it.isWhitespace() }
+        val count = if (trimmedEnd < 0) {
+            before.length
+        } else {
+            val wordStart = before.substring(0, trimmedEnd + 1)
+                .indexOfLast { it.isWhitespace() } + 1
+            before.length - wordStart
+        }
+        ic.deleteSurroundingText(count.coerceAtLeast(1), 0)
+        refreshSuggestion()
+    }
+
+    private fun showDeleteClearPopup(anchor: View) {
+        val label = TextView(this).apply {
+            text = "✕"
+            gravity = Gravity.CENTER
+            textSize = 24f
+            setTextColor(COLOR_KEY_TEXT)
+            background = roundedBackground(COLOR_SPECIAL_KEY)
+        }
+        deleteClearPopup = PopupWindow(label, anchor.width, dp(60), false).apply {
+            isTouchable = false
+            isClippingEnabled = false
+            showAsDropDown(anchor, 0, -anchor.height - dp(64))
+        }
+        updateDeleteClearPopup()
+    }
+
+    private fun updateDeleteClearPopup() {
+        val label = deleteClearPopup?.contentView as? TextView ?: return
+        label.background = roundedBackground(
+            if (deleteClearTargeted) COLOR_ACTIVE else COLOR_SPECIAL_KEY,
+        )
+    }
+
+    private fun dismissDeleteClearPopup() {
+        deleteClearPopup?.dismiss()
+        deleteClearPopup = null
+        deleteClearTargeted = false
     }
 
     private fun buildEqualRow(
@@ -576,7 +660,13 @@ class InlineImeService : InputMethodService() {
     private companion object {
         const val PASTE_CHUNK_SIZE = 8 * 1024
         const val DOUBLE_TAP_MS = 500L
-        const val CLEAR_DELETE_HOLD_MS = 650L
+        const val DELETE_REPEAT_START_MS = 350L
+        const val DELETE_CLEAR_POPUP_MS = 450L
+        const val DELETE_FAST_MODE_MS = 1000L
+        const val DELETE_WORD_MODE_MS = 1800L
+        const val DELETE_INITIAL_INTERVAL_MS = 120L
+        const val DELETE_FAST_INTERVAL_MS = 65L
+        const val DELETE_WORD_INTERVAL_MS = 140L
 
         const val COLOR_BACKGROUND = 0xFF1B1C21.toInt()
         const val COLOR_KEY = 0xFF2B2C31.toInt()
