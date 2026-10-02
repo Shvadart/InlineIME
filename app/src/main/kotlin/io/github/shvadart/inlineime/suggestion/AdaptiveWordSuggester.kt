@@ -100,15 +100,45 @@ class AdaptiveWordSuggester(private val prefs: SharedPreferences) {
     fun autocorrect(contextBeforeCursor: String, russian: Boolean): WordCandidate? {
         val raw = extractCurrentWord(contextBeforeCursor)
         if (raw.length < 3 || isTechnicalContext(contextBeforeCursor, raw)) return null
-        if (isKnownWord(raw, russian)) return null
-        val candidates = suggest(contextBeforeCursor, russian, limit = 3)
+
+        // Compound words are corrected one part at a time: "каких-тл" -> "каких-то".
+        // This keeps the hyphen and avoids treating the whole compound as one huge typo.
+        if ('-' in raw && !raw.startsWith('-') && !raw.endsWith('-')) {
+            val parts = raw.split('-')
+            if (parts.size in 2..3 && parts.all { it.isNotEmpty() }) {
+                var changed = false
+                val corrected = parts.map { part ->
+                    val replacement = autocorrectSingleWord(part, russian)
+                    if (replacement != null) {
+                        changed = true
+                        replacement.word
+                    } else {
+                        part
+                    }
+                }
+                if (changed) {
+                    return WordCandidate(
+                        word = corrected.joinToString("-"),
+                        score = 9_000,
+                        editDistance = 1,
+                        prefixMatch = false,
+                        typoCost = 6,
+                    )
+                }
+            }
+            return null
+        }
+
+        return autocorrectSingleWord(raw, russian)
+    }
+
+    private fun autocorrectSingleWord(raw: String, russian: Boolean): WordCandidate? {
+        if (raw.length < 4 || isKnownWord(raw, russian)) return null
+        val syntheticContext = raw
+        val candidates = suggest(syntheticContext, russian, limit = 3)
             .filter { !it.prefixMatch }
         val best = candidates.firstOrNull() ?: return null
         val runnerUp = candidates.getOrNull(1)
-
-        // Short words are extremely ambiguous ("а", "в", "на", "как", "так"...).
-        // Never auto-replace them from fuzzy distance alone.
-        if (raw.length <= 3) return null
 
         val threshold = when {
             raw.length == 4 -> 10
@@ -116,8 +146,6 @@ class AdaptiveWordSuggester(private val prefs: SharedPreferences) {
             else -> 22
         }
         if (best.typoCost > threshold) return null
-
-        // For short/medium words require a clear lead over another plausible candidate.
         if (raw.length <= 5 && runnerUp != null && best.score - runnerUp.score < 500) return null
         return best
     }
@@ -295,7 +323,9 @@ class AdaptiveWordSuggester(private val prefs: SharedPreferences) {
             "система","системы","версия","версии","обновление","обновить","установить","установка","скачать","загрузить",
             "интернет","сеть","сети","адрес","домен","домены","почта","ссылка","ссылки","сайт","сайта","страница",
             "ещё","всё","идёт","пойдёт","найдёт","найти","нашёл","нашла","берёт","даёт","даём","моё","твоё","своё",
-            "еще","все","идет","пойдет","найдет","берет","дает","даем","мое","твое","свое"
+            "еще","все","идет","пойдет","найдет","берет","дает","даем","мое","твое","свое",
+            "то","либо","нибудь","каких","какого","какому","каким","какую","какою","скачал","скачала","скачали",
+            "скачать","живёт","живет","ждёт","ждет","дефис","дефиса","дефисом","учитывать","учитывает","учитывал"
         )
         val EN_WORDS = setOf(
             "a","about","after","again","all","also","and","any","are","as","at","back","be","because","been","before",
