@@ -519,16 +519,13 @@ class InlineImeService : InputMethodService() {
 
     private fun pasteFast() {
         val ic = currentInputConnection ?: return
-
-        if (ic.performContextMenuAction(android.R.id.paste)) {
-            refreshSuggestion()
-            return
-        }
-
         val clipboard = getSystemService(android.content.ClipboardManager::class.java)
         val item = clipboard.primaryClip?.getItemAt(0) ?: return
         val text = item.coerceToText(this)?.toString() ?: return
 
+        // Some editors (notably terminal emulators) report the Android paste
+        // context action as handled without actually inserting clipboard text.
+        // Commit the clipboard contents through InputConnection instead.
         ic.beginBatchEdit()
         try {
             text.chunked(PASTE_CHUNK_SIZE).forEach { chunk ->
