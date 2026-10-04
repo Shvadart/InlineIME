@@ -39,6 +39,19 @@ class AiCompletionClient(
                 .optString("completion")
                 .trimEnd('\r', '\n')
                 .takeIf { it.isNotBlank() }
+                ?.let { completion ->
+                    // Models often return "продолжение" without a leading space.
+                    // Add one only when both sides are word-like, so punctuation
+                    // continuations such as "," or "." stay attached correctly.
+                    if (
+                        context.lastOrNull()?.isLetterOrDigit() == true &&
+                        completion.firstOrNull()?.isLetterOrDigit() == true
+                    ) {
+                        " $completion"
+                    } else {
+                        completion
+                    }
+                }
                 ?.take(MAX_COMPLETION_LENGTH)
         } catch (_: Exception) {
             null
