@@ -207,7 +207,11 @@ class InlineImeService : InputMethodService() {
             candidatesStart,
             candidatesEnd,
         )
-        if (aiGhostText != null && candidatesStart < 0 && candidatesEnd < 0) {
+        // setComposingText() itself triggers selection updates in many editors.
+        // While our ghost is the active composing range, keep it stable and do not
+        // start another AI request. A real cursor move / editor cancellation clears it.
+        if (aiGhostText != null) {
+            if (candidatesStart >= 0 && candidatesEnd >= candidatesStart) return
             aiGhostText = null
             aiCompletion = null
             aiCompletionContext = null
@@ -1058,13 +1062,14 @@ class InlineImeService : InputMethodService() {
                     aiCompletion = completion
                     aiCompletionContext = if (completion != null) context else null
                     if (completion != null) {
-                        // Diagnostic/stable path: do not mutate the editor with
-                        // composing text here. setComposingText() triggers selection
-                        // callbacks in some editors, which can immediately invalidate
-                        // the just-received AI completion before it becomes visible.
-                        // First prove the full AI path with a keyboard-owned UI.
-                        aiGhostText = null
+                        // The request is already complete, so invalidate its generation
+                        // before touching composing state. Selection callbacks caused by
+                        // setComposingText() must not schedule a replacement request.
+                        aiRequestGeneration.incrementAndGet()
+                        val ghostShown = showAiGhost(completion)
+                        // Keep the keyboard-owned chip as a reliable accept/fallback UI.
                         showAiCompletionFallback(completion)
+                        if (!ghostShown) aiGhostText = null
                     } else {
                         refreshSuggestion()
                     }
