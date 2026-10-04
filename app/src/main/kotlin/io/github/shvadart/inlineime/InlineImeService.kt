@@ -1057,7 +1057,15 @@ class InlineImeService : InputMethodService() {
                     if (!current.endsWith(context)) return@post
                     aiCompletion = completion
                     aiCompletionContext = if (completion != null) context else null
-                    if (completion != null && !showAiGhost(completion)) refreshSuggestion()
+                    if (completion != null) {
+                        // Keep a visible fallback in the suggestion strip even when
+                        // setComposingText() reports success. Some editors accept
+                        // composing text but do not render our gray span visibly.
+                        showAiGhost(completion)
+                        showAiCompletionFallback(completion)
+                    } else {
+                        refreshSuggestion()
+                    }
                 }
             }
         }
@@ -1086,6 +1094,14 @@ class InlineImeService : InputMethodService() {
             }
         }
         return shown
+    }
+
+    private fun showAiCompletionFallback(completion: String) {
+        showSuggestionChoices(listOf("✨ $completion")) {
+            if (!acceptAiGhost()) {
+                applyAiCompletion(completion)
+            }
+        }
     }
 
     private fun acceptAiGhost(): Boolean {
