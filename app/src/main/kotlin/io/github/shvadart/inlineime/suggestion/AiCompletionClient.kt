@@ -37,8 +37,8 @@ class AiCompletionClient(
             val response = connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
             JSONObject(response)
                 .optString("completion")
-                .trim()
-                .takeIf { it.isNotEmpty() }
+                .trimEnd('\r', '\n')
+                .takeIf { it.isNotBlank() }
                 ?.take(MAX_COMPLETION_LENGTH)
         } catch (_: Exception) {
             null
