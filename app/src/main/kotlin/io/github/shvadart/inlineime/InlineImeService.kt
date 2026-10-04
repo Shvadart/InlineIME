@@ -161,9 +161,8 @@ class InlineImeService : InputMethodService() {
         super.onStartInputView(info, restarting)
 
         // Android may keep the IME view instance alive across screen-off/unlock.
-        // Rebuild the keyboard subtree here so it cannot come back with stale
-        // measured rows or a partially restored layout.
-        showKeyboardContent()
+        // Keep the existing view hierarchy/state, but force a fresh measure/layout.
+        keyboardContent.requestLayout()
         window?.window?.decorView?.requestApplyInsets()
         if (info != null && !autoCapitalizationAllowed(info)) {
             capsLock = false
@@ -206,7 +205,12 @@ class InlineImeService : InputMethodService() {
             candidatesStart,
             candidatesEnd,
         )
-        if (aiGhostText == null) refreshSuggestion()
+        if (aiGhostText != null && candidatesStart < 0 && candidatesEnd < 0) {
+            aiGhostText = null
+            aiCompletion = null
+            aiCompletionContext = null
+        }
+        refreshSuggestion()
     }
 
     private fun buildEditingToolbar(): View {
@@ -524,14 +528,45 @@ class InlineImeService : InputMethodService() {
             }
         }, weightedKeyParams(0.8f, dp(56)))
 
-        row.addView(bottomKey("↵") {
-            rememberEditorState()
-            currentInputConnection?.commitText("\n", 1)
-            syncAutoShiftFromCursor()
-            refreshSuggestion()
+        row.addView(bottomKey(enterKeyLabel()) {
+            performEnterAction()
         }, weightedKeyParams(1.2f, dp(56)))
 
         return row
+    }
+
+    private fun enterKeyLabel(): String = when (currentInputEditorInfo?.imeOptions?.and(EditorInfo.IME_MASK_ACTION)) {
+        EditorInfo.IME_ACTION_SEARCH -> "⌕"
+        EditorInfo.IME_ACTION_GO -> "→"
+        EditorInfo.IME_ACTION_SEND -> "➤"
+        EditorInfo.IME_ACTION_NEXT -> "›"
+        EditorInfo.IME_ACTION_DONE -> "✓"
+        else -> "↵"
+    }
+
+    private fun performEnterAction() {
+        val ic = currentInputConnection ?: return
+        rememberEditorState()
+        val action = currentInputEditorInfo?.imeOptions?.and(EditorInfo.IME_MASK_ACTION)
+            ?: EditorInfo.IME_ACTION_NONE
+        val handled = action != EditorInfo.IME_ACTION_NONE &&
+            action != EditorInfo.IME_ACTION_UNSPECIFIED &&
+            ic.performEditorAction(action)
+
+        if (!handled) {
+            // Some search/address fields do not expose a proper IME action but
+            // still react to the hardware Enter key.
+            val singleLine = currentInputEditorInfo?.inputType
+                ?.and(InputType.TYPE_TEXT_FLAG_MULTI_LINE) == 0
+            if (singleLine) {
+                ic.sendKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENTER))
+                ic.sendKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_ENTER))
+            } else {
+                ic.commitText("\n", 1)
+            }
+        }
+        syncAutoShiftFromCursor()
+        refreshSuggestion()
     }
 
     private fun renderLetterRows() {
@@ -973,6 +1008,8 @@ class InlineImeService : InputMethodService() {
         aiRequestGeneration.incrementAndGet()
         aiCompletion = null
         aiCompletionContext = null
+        aiGhostText = null
+        currentInputConnection?.finishComposingText()
     }
 
     private fun aiAllowedForCurrentEditor(): Boolean {
