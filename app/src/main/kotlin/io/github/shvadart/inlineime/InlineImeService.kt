@@ -1058,10 +1058,12 @@ class InlineImeService : InputMethodService() {
                     aiCompletion = completion
                     aiCompletionContext = if (completion != null) context else null
                     if (completion != null) {
-                        // Keep a visible fallback in the suggestion strip even when
-                        // setComposingText() reports success. Some editors accept
-                        // composing text but do not render our gray span visibly.
-                        showAiGhost(completion)
+                        // Diagnostic/stable path: do not mutate the editor with
+                        // composing text here. setComposingText() triggers selection
+                        // callbacks in some editors, which can immediately invalidate
+                        // the just-received AI completion before it becomes visible.
+                        // First prove the full AI path with a keyboard-owned UI.
+                        aiGhostText = null
                         showAiCompletionFallback(completion)
                     } else {
                         refreshSuggestion()
