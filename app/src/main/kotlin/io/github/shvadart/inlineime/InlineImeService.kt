@@ -61,6 +61,7 @@ class InlineImeService : InputMethodService() {
     private lateinit var languageButton: TextView
     private lateinit var shiftButton: TextView
     private lateinit var spaceButton: TextView
+    private lateinit var enterButton: TextView
 
     private val gestureHandler = Handler(Looper.getMainLooper())
     private val aiHandler = Handler(Looper.getMainLooper())
@@ -174,6 +175,7 @@ class InlineImeService : InputMethodService() {
         loadClipboardHistory()
         startClipboardHistory()
         captureClipboard()
+        if (::enterButton.isInitialized) enterButton.text = enterKeyLabel()
         refreshSuggestion()
     }
 
@@ -528,9 +530,10 @@ class InlineImeService : InputMethodService() {
             }
         }, weightedKeyParams(0.8f, dp(56)))
 
-        row.addView(bottomKey(enterKeyLabel()) {
+        enterButton = bottomKey(enterKeyLabel()) {
             performEnterAction()
-        }, weightedKeyParams(1.2f, dp(56)))
+        }
+        row.addView(enterButton, weightedKeyParams(1.2f, dp(56)))
 
         return row
     }
@@ -1033,6 +1036,7 @@ class InlineImeService : InputMethodService() {
         aiCompletionContext = null
 
         if (!aiAllowedForCurrentEditor()) return
+        if (!aiPrefs.getBoolean(KEY_AI_ENABLED, false)) return
         if (aiPrefs.getString(KEY_AI_ENDPOINT, "").isNullOrBlank()) return
         val context = contextBeforeCursor.takeLast(AI_CONTEXT_LENGTH)
         if (context.trim().length < AI_MIN_CONTEXT_LENGTH) return
@@ -1112,7 +1116,7 @@ class InlineImeService : InputMethodService() {
     private fun refreshSuggestion() {
         if (!::suggestionRow.isInitialized) return
         val beforeCursor = currentInputConnection
-            ?.getTextBeforeCursor(256, 0)
+            ?.getTextBeforeCursor(AI_CONTEXT_LENGTH, 0)
             ?.toString()
             .orEmpty()
 
@@ -1509,6 +1513,7 @@ class InlineImeService : InputMethodService() {
 
     private companion object {
         const val KEY_AI_ENDPOINT = "endpoint"
+        const val KEY_AI_ENABLED = "enabled"
         const val AI_DEBOUNCE_MS = 650L
         const val AI_CONTEXT_LENGTH = 768
         const val AI_MIN_CONTEXT_LENGTH = 12
