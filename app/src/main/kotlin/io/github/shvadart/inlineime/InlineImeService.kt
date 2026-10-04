@@ -946,8 +946,8 @@ class InlineImeService : InputMethodService() {
         }
     }
 
-    private fun autoCapitalizationAllowed(info: EditorInfo = currentInputEditorInfo ?: return false): Boolean {
-        val inputType = info.inputType
+    private fun autoCapitalizationAllowed(info: EditorInfo? = currentInputEditorInfo): Boolean {
+        val inputType = info?.inputType ?: return false
         if (inputType and InputType.TYPE_MASK_CLASS != InputType.TYPE_CLASS_TEXT) return false
 
         // Terminal/console editors (including Termux) commonly expose a text field
